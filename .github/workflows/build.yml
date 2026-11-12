@@ -1,0 +1,79 @@
+# Builds tldserver.exe on Windows with MSVC against the mod's network code (submodule `mod`) and runs the offline
+# tests. Every push to main puts tldserver.exe in the "server-latest" release.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # the server-latest release below
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true  # mod/ only (the mod's own submodules aren't needed)
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure and build
+        shell: cmd
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
+          cmake --build build > build.log 2>&1
+          set rc=%ERRORLEVEL%
+          type build.log
+          exit /b %rc%
+
+      - name: Compiler errors
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path build.log) {
+            $e = Select-String -Path build.log -Pattern 'error C\d+|fatal error|error LNK|: error' | Select-Object -First 9
+            foreach ($x in $e) { Write-Host "::error title=compiler::$($x.Line.Trim())" }
+          }
+
+      - name: Offline tests
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($t in Get-ChildItem build\*_test.exe) {
+            Write-Host "=== $($t.Name)"
+            $out = & $t.FullName 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) {
+              $failed += $t.Name
+              $bad = ($out -split "`n" | Where-Object { $_ -match 'FAIL' }) -join ' | '
+              Write-Host "::error title=$($t.BaseName)::$bad"
+            } else {
+              Write-Host "::notice title=$($t.BaseName)::$((($out.Trim() -split "`n")[-1]).Trim())"
+            }
+          }
+          if ($failed.Count) { Write-Error "failed: $($failed -join ', ')"; exit 1 }
+
+      - name: tldserver.exe starts
+        shell: pwsh
+        run: |
+          $out = & build\tldserver.exe --help 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'tldserver') { Write-Error "tldserver.exe --help printed nothing"; exit 1 }
+
+      - name: tldserver.exe to the server-latest release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view server-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create server-latest -R "$GITHUB_REPOSITORY" --prerelease --title "tldserver.exe (latest)" --notes "tldserver.exe"
+          gh release upload server-latest build/tldserver.exe -R "$GITHUB_REPOSITORY" --clobber
+          mod=$(git -C mod rev-parse --short=7 HEAD)
+          gh release edit server-latest -R "$GITHUB_REPOSITORY" --notes "tldserver.exe, build ${GITHUB_SHA::7} (mod ${mod}, run ${GITHUB_RUN_ID})"
+          echo "::notice::tldserver.exe is in the server-latest release"
