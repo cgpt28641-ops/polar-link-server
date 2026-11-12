@@ -27,6 +27,7 @@ bool Server::start(const Options& options) {
     cfg.ask_to_join = false;
     if (!session_.start(cfg)) return false;
     started_ = true;
+    world_.on_started();
     // Never a valid state: the players' games keep the server's "avatar" hidden. Always "in game" (START pressed),
     // so a player in the lobby goes straight in.
     net::StateMsg nobody;
@@ -148,7 +149,7 @@ std::string Server::command(const std::string& line, bool* quit) {
     std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
     if (cmd.empty()) return {};
     if (cmd == "help" || cmd == "?")
-        return "players | kick <id> | say <text> | world | save | stop";
+        return "players | kick <id> | say <text> | world | save | forget mode|features|clock | stop";
     if (cmd == "players") {
         const auto list = players();
         if (list.empty()) return "nobody is in";
@@ -178,7 +179,14 @@ std::string Server::command(const std::string& line, bool* quit) {
         say(text);
         return "said";
     }
-    if (cmd == "world") return world_.describe();
+    if (cmd == "world")
+        return world_.describe() + (world_.source() >= 0 ? "; player " + std::to_string(world_.source()) + "'s game runs the clock"
+                                                         : "; nobody's game runs the clock");
+    if (cmd == "forget") {
+        std::string what;
+        in >> what;
+        return world_.forget(what) ? "forgotten: the next game in gives its own " + what : "forget mode | features | clock";
+    }
     if (cmd == "save") {
         if (opt_.world_file.empty()) return "no world file";
         return save() ? "saved" : "couldn't save (see above)";

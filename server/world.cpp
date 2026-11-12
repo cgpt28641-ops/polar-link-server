@@ -1,6 +1,7 @@
 #include "server/world.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -20,6 +21,12 @@ constexpr uint32_t kFileVersion = 1;
 // Ours, beyond the mod's tags: our change counter (u32). A restarted server goes on counting from it, so what it sends
 // is never older than what a player's game already took from "the host" before the restart.
 constexpr uint8_t kTagServerSeq = 200;
+constexpr uint8_t kTagClock = 201;     // a World message: the clock, weather and wind as the world source last gave them
+constexpr uint8_t kTagMode = 202;      // a GameMode message: the world's experience mode and seed
+constexpr uint8_t kTagFeatures = 203;  // a Features message: the world's feature switches
+constexpr double kFollowMs = 6000;     // a game follows the kept clock this long before it may be the world source
+constexpr double kSourceAwayMs = 30000;  // the source may be out of the game (a door, a region loading) this long
+constexpr double kFlagsMs = 2000;      // Msg::Server to each player this often
 constexpr uint32_t kSeqMargin = 100000;  // sent since the last save, at most
 constexpr double kArrivalDelayMs = 500;  // a player seen in a scene gets it this much later (their game has settled)
 constexpr uint8_t kNobody = 0xFE;        // LockTable::expire's "keep": no player of ours is exempt
@@ -105,6 +112,20 @@ bool World::load(const std::filesystem::path& file) {
         }
         const net::Packet p = world_keep::packet(r);
         net::Reader body = net::packet_body(p);
+        if (static_cast<uint8_t>(r.tag) == kTagClock) {
+            net::WorldMsg w;
+            if (net::read_world(body, w) && w.valid) world_ = std::move(w), have_world_ = true;
+            continue;
+        }
+        if (static_cast<uint8_t>(r.tag) == kTagMode) {
+            if (net::read_game_mode(body, mode_, seed_) && !mode_.empty()) have_mode_ = true;
+            continue;
+        }
+        if (static_cast<uint8_t>(r.tag) == kTagFeatures) {
+            float snow = -1;
+            if (net::read_features(body, features_, snow)) have_features_ = true;
+            continue;
+        }
         bool ok = false;
         switch (r.tag) {
             case Tag::ItemRecord: {
@@ -245,6 +266,28 @@ bool World::save(const std::filesystem::path& file) {
         records.append(reinterpret_cast<const char*>(msg.data()), msg.size());
         ++count;
     }
+    auto add_own = [&](uint8_t tag, const net::Writer& w) {
+        if (!w.ok()) return;
+        records += static_cast<char>(tag);
+        put_u32(records, static_cast<uint32_t>(w.size()));
+        records.append(reinterpret_cast<const char*>(w.data()), w.size());
+        ++count;
+    };
+    if (have_world_) {
+        net::Writer w(net::Msg::World, net::kMaxMessage);
+        net::write_world(w, world_);
+        add_own(kTagClock, w);
+    }
+    if (have_mode_) {
+        net::Writer w(net::Msg::GameMode, net::kMaxMessage);
+        net::write_game_mode(w, mode_, seed_);
+        add_own(kTagMode, w);
+    }
+    if (have_features_) {
+        net::Writer w(net::Msg::Features, 64);
+        net::write_features(w, features_, -1.0f);
+        add_own(kTagFeatures, w);
+    }
     records += static_cast<char>(kTagServerSeq);
     put_u32(records, sizeof(uint32_t));
     put_u32(records, seq_);
@@ -297,11 +340,17 @@ World::Counts World::counts() const {
 
 std::string World::describe() const {
     const Counts c = counts();
-    char line[320];
+    char line[480];
+    char clock[64] = "none yet";
+    if (have_world_) {
+        const int minutes = static_cast<int>((world_.normalized_time - std::floor(world_.normalized_time)) * 1440.0f + 0.5f) % 1440;
+        snprintf(clock, sizeof(clock), "day %d %02d:%02d", world_.day, minutes / 60, minutes % 60);
+    }
     snprintf(line, sizeof(line),
              "%zu scene(s) (%zu with a whole item list), %zu item(s), %zu taken, %zu container(s), %zu object(s), "
-             "%zu fire(s), %zu water source(s), %zu other record(s)",
-             c.scenes, c.listed_scenes, c.items, c.gone, c.containers, c.objects, c.fires, c.water, c.other);
+             "%zu fire(s), %zu water source(s), %zu other record(s); clock %s, mode %s, features %s",
+             c.scenes, c.listed_scenes, c.items, c.gone, c.containers, c.objects, c.fires, c.water, c.other, clock,
+             have_mode_ ? "kept" : "none yet", have_features_ ? "kept" : "none yet");
     return line;
 }
 
@@ -321,6 +370,7 @@ bool World::newest(const net::Packet& p, const std::string& key, uint32_t seq) {
 }
 
 bool World::on_packet(const net::Packet& p, double now_ms) {
+    if (shared_packet(p)) return true;
     net::Reader r = net::packet_body(p);
     switch (p.type) {
         case net::Msg::ItemPut: {
@@ -635,8 +685,143 @@ void World::send_scene(uint8_t to, const std::string& scene) {
          s.listed ? "the whole list of " : "the changes to ", items, s.objects.size(), s.fires.size(), s.water.size());
 }
 
+// --- the clock, weather, mode and switches the players' games give ---------------------------------------------------
+
+void World::on_started() {
+    if (have_world_) session_.set_world(world_);
+}
+
+bool World::forget(const std::string& what) {
+    if (what == "mode") have_mode_ = false, mode_.clear();
+    else if (what == "features") have_features_ = false;
+    else if (what == "clock") have_world_ = false, source_ = -1;
+    else return false;
+    for (Friend& f : friends_) f.told_mode = f.told_features = false;
+    dirty_ = true;
+    return true;
+}
+
+bool World::shared_packet(const net::Packet& p) {
+    net::Reader r = net::packet_body(p);
+    switch (p.type) {
+        case net::Msg::World: {
+            net::WorldMsg w;
+            if (static_cast<int>(p.from) != source_ || !net::read_world(r, w) || !w.valid) return true;
+            w.world_id = "server";  // one world whoever's game runs its clock (the mod's first-join rule goes by it)
+            const bool first = !have_world_;
+            world_ = w;
+            have_world_ = true;
+            dirty_ = true;
+            session_.set_world(world_);
+            if (first) logf("world: the clock and weather are in (from player %u's game)", p.from);
+            return true;
+        }
+        case net::Msg::GameMode: {
+            std::string text;
+            int32_t seed = 0;
+            if (have_mode_ || !net::read_game_mode(r, text, seed) || text.empty()) return true;
+            mode_ = std::move(text);
+            seed_ = seed;
+            have_mode_ = true;
+            dirty_ = true;
+            net::Writer w(net::Msg::GameMode, net::kMaxMessage);
+            net::write_game_mode(w, mode_, seed_);
+            session_.send_packet_except(p.from, w, true);
+            for (Friend& f : friends_) f.told_mode = true;  // (everyone linked has it now; a new connection starts over)
+            logf("world: the experience mode and seed (%d) are player %u's now, for good (console: forget mode)", seed_, p.from);
+            return true;
+        }
+        case net::Msg::Features: {
+            uint32_t bits = 0;
+            float snow = -1;
+            if (!net::read_features(r, bits, snow)) return true;
+            if (!have_features_) {
+                features_ = bits;
+                have_features_ = true;
+                dirty_ = true;
+                net::Writer w(net::Msg::Features, 64);
+                net::write_features(w, features_, snow);
+                session_.send_packet(w, true);  // the giver too: every game follows what is kept
+                for (Friend& f : friends_) f.told_features = true;
+                logf("world: the feature switches (0x%x) are player %u's now, for good (console: forget features)", features_, p.from);
+            } else if (static_cast<int>(p.from) == source_) {  // the world source's trees' snow, with the kept switches
+                net::Writer w(net::Msg::Features, 64);
+                net::write_features(w, features_, snow);
+                session_.send_packet_except(p.from, w, true);
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+void World::shared_tick(const net::Status& st, double now_ms) {
+    std::array<bool, net::kMaxPlayers> linked{}, in_now{};
+    for (const net::PlayerInfo& p : st.players) {
+        if (p.id == 0 || p.id >= net::kMaxPlayers || !p.linked) continue;
+        linked[p.id] = true;
+        Friend& f = friends_[p.id];
+        if (f.link != p.link) {
+            f = Friend{};
+            f.link = p.link;
+        }
+        const auto state = session_.remote_state(p.id);
+        in_now[p.id] = state && state->valid;
+        if (in_now[p.id]) {
+            if (f.in_game_since < 0) f.in_game_since = now_ms;
+            f.last_valid = now_ms;
+        } else if (f.in_game_since >= 0 && now_ms - f.last_valid > kSourceAwayMs) {
+            f.in_game_since = -1;
+        }
+        if (have_mode_ && !f.told_mode) {
+            f.told_mode = true;
+            net::Writer w(net::Msg::GameMode, net::kMaxMessage);
+            net::write_game_mode(w, mode_, seed_);
+            session_.send_packet_to(p.id, w, true);
+        }
+        if (have_features_ && !f.told_features) {
+            f.told_features = true;
+            net::Writer w(net::Msg::Features, 64);
+            net::write_features(w, features_, -1.0f);
+            session_.send_packet_to(p.id, w, true);
+        }
+    }
+    for (uint8_t id = 1; id < net::kMaxPlayers; ++id)
+        if (!linked[id]) friends_[id] = Friend{};
+    if (source_ >= 0 && (!linked[source_] || friends_[source_].in_game_since < 0)) {
+        logf("world: player %d's game no longer runs the clock and weather (%s); they stand until another game takes over",
+             source_, linked[source_] ? "out of the game" : "left");
+        source_ = -1;
+    }
+    if (source_ < 0) {
+        for (uint8_t id = 1; id < net::kMaxPlayers && source_ < 0; ++id) {
+            const Friend& f = friends_[id];
+            if (!linked[id] || !in_now[id] || f.in_game_since < 0) continue;
+            if (have_world_ && now_ms - f.in_game_since < kFollowMs) continue;  // it follows the kept clock first
+            source_ = id;
+            logf("world: player %u's game runs the clock and weather now", id);
+        }
+    }
+    for (uint8_t id = 1; id < net::kMaxPlayers; ++id) {
+        if (!linked[id]) continue;
+        Friend& f = friends_[id];
+        const uint8_t flags = static_cast<uint8_t>(net::kServerIs | (source_ == id ? net::kServerWorldSource : 0) |
+                                                   (have_mode_ ? 0 : net::kServerWantsMode) |
+                                                   (have_features_ ? 0 : net::kServerWantsFeatures));
+        const bool changed = flags != f.flags;
+        if (!changed && now_ms - f.flags_ms < kFlagsMs) continue;
+        f.flags = flags;
+        f.flags_ms = now_ms;
+        net::Writer w(net::Msg::Server);
+        net::write_server(w, flags);
+        session_.send_packet_to(id, w, changed);
+    }
+}
+
 void World::tick(double now_ms) {
     const net::Status st = session_.status();
+    shared_tick(st, now_ms);
     std::array<bool, net::kMaxPlayers> linked{};
     for (const net::PlayerInfo& p : st.players) {
         if (p.id == 0 || p.id >= net::kMaxPlayers || !p.linked) continue;

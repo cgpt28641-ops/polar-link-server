@@ -7,7 +7,8 @@
 // The game version must be the players' exactly: given with --game-version, read from
 // DIR/tld_Data/StreamingAssets/version.txt with --game-dir, or from version.txt next to tldserver.exe (copy it there
 // from the game).
-// Console: players | kick <id> | say <text> | world | save | stop (also Ctrl+C). Everything is written to tldserver.log too.
+// Console: players | kick <id> | say <text> | world | save | forget mode|features|clock | stop (also Ctrl+C, and
+// closing the window: the world is saved first). Everything is written to tldserver.log too.
 
 #include <atomic>
 #include <chrono>
@@ -25,6 +26,10 @@
 
 #include "server/server.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #ifndef TLDSERVER_BUILD
 #define TLDSERVER_BUILD "local"
 #endif
@@ -39,6 +44,17 @@ std::mutex g_out_mu;
 std::ofstream g_log;
 
 void on_signal(int) { g_stop = true; }
+
+#ifdef _WIN32
+// The window's X, logging off, Windows shutting down: Windows ends the process as soon as this returns (or after about
+// 5 s), so it waits here until the loop has saved the world and stopped.
+std::atomic<bool> g_done{false};
+BOOL WINAPI on_console(DWORD) {
+    g_stop = true;
+    for (int i = 0; i < 400 && !g_done; ++i) Sleep(10);
+    return TRUE;
+}
+#endif
 
 void out(const std::string& text) {
     const std::time_t t = std::time(nullptr);
@@ -123,6 +139,9 @@ int main(int argc, char** argv) {
 
     if (opt.world_file.empty()) opt.world_file = (exe_dir / "world.bin").string();
 
+#ifdef _WIN32
+    SetConsoleCtrlHandler(on_console, TRUE);
+#endif
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
 
@@ -149,5 +168,8 @@ int main(int argc, char** argv) {
         server.wait(5);
     }
     server.stop();
+#ifdef _WIN32
+    g_done = true;
+#endif
     return 0;
 }

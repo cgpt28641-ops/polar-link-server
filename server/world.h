@@ -13,6 +13,11 @@
 //   objects     broken down / harvested / locks / placements / bodies: the newest ObjectPut per object.
 //   fires, water  the newest FirePut / WaterPut per fire / source.
 //   passed on   blood, spray paint, house lights, handing an item over (Give): to the other players, nothing kept.
+//   clock, weather, mode, seed, feature switches: the server has no game to run them. One player's game at a time is
+//               the "world source" (the mod's coop_server.h): its World (clock, weather, wind) comes here, is kept and
+//               goes to the others as a host's would; a game that comes in follows the kept world for a few seconds
+//               before it may be picked, and with nobody in the clock stands still. The experience mode + seed and the
+//               feature switches are the first game's to give them, kept for good (console: forget mode / features).
 // A player who arrives in a scene (linked, caught up, a valid State there) gets what is kept for it once per arrival.
 //
 // One thread (the server's loop).
@@ -44,7 +49,13 @@ public:
     bool dirty() const { return dirty_; }
 
     // One of the players' messages. False: not a world message (the caller's).
+    void on_started();  // once the session runs: the kept clock and weather go out again
     bool on_packet(const net::Packet& p, double now_ms);
+    bool forget(const std::string& what);  // console: "mode", "features" or "clock": the next game gives its own
+    int source() const { return source_; } // the player whose game is the world's clock and weather (-1 nobody)
+    bool has_mode() const { return have_mode_; }
+    bool has_features() const { return have_features_; }
+    bool has_clock() const { return have_world_; }
     // Every round: arrivals, locks whose player went quiet or left.
     void tick(double now_ms);
 
@@ -77,6 +88,16 @@ private:
         double due_ms = 0;
     };
 
+    struct Friend {  // what we told one player's connection, and since when its game is in
+        uint32_t link = 0;
+        double in_game_since = -1;  // -1: not in the game (or away too long)
+        double last_valid = 0;
+        uint8_t flags = 0xFF;       // the Msg::Server flags last sent
+        double flags_ms = 0;
+        bool told_mode = false, told_features = false;
+    };
+    bool shared_packet(const net::Packet& p);
+    void shared_tick(const net::Status& st, double now_ms);
     bool newest(const net::Packet& p, const std::string& key, uint32_t seq);
     void item_put(const net::Packet& p, net::ItemPutMsg m);
     void item_gone(const net::Packet& p, net::ItemGoneMsg m, double now_ms);
@@ -98,6 +119,15 @@ private:
     net::Claims claims_;
     net::LockTable locks_;
     double last_lock_tick_ = 0;
+    std::array<Friend, net::kMaxPlayers> friends_{};
+    int source_ = -1;
+    bool have_world_ = false;
+    net::WorldMsg world_;
+    bool have_mode_ = false;
+    std::string mode_;
+    int32_t seed_ = 0;
+    bool have_features_ = false;
+    uint32_t features_ = 0;
     uint32_t seq_ = 0;  // our change counter (what we pass on and send goes as the host's own)
     bool dirty_ = false;
 };

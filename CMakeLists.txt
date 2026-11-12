@@ -50,3 +50,6 @@ target_link_libraries(server_test PRIVATE tldserver_core)
 
 add_executable(world_test tests/world_test.cpp)
 target_link_libraries(world_test PRIVATE tldserver_core)
+
+add_executable(shared_test tests/shared_test.cpp)
+target_link_libraries(shared_test PRIVATE tldserver_core)
