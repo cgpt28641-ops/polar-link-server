@@ -12,6 +12,8 @@
 //               them, or "nothing known: yours stands". One player at a time in a container (net::LockTable).
 //   objects     broken down / harvested / locks / placements / bodies: the newest ObjectPut per object.
 //   fires, water  the newest FirePut / WaterPut per fire / source.
+//   animals     the mod's wildlife ownership with the host's part done here (server/wildlife.h): the registry, who
+//               runs which animal, who spawns where, deaths and spawn regions; kept in the file too.
 //   passed on   blood, spray paint, house lights, handing an item over (Give): to the other players, nothing kept.
 //   clock, weather, mode, seed, feature switches: the server has no game to run them. One player's game at a time is
 //               the "world source" (the mod's coop_server.h): its World (clock, weather, wind) comes here, is kept and
@@ -35,6 +37,7 @@
 #include "net/claims.h"
 #include "net/container_locks.h"
 #include "net/session.h"
+#include "server/wildlife.h"
 
 namespace srv {
 
@@ -56,6 +59,7 @@ public:
     bool has_mode() const { return have_mode_; }
     bool has_features() const { return have_features_; }
     bool has_clock() const { return have_world_; }
+    const Wildlife& wildlife() const { return wildlife_; }
     // Every round: arrivals, locks whose player went quiet or left.
     void tick(double now_ms);
 
@@ -120,6 +124,8 @@ private:
     net::LockTable locks_;
     double last_lock_tick_ = 0;
     std::array<Friend, net::kMaxPlayers> friends_{};
+    Wildlife wildlife_;
+    double hours_ = 0;  // the world's clock in game hours, counted from the clock's steps (it only ever goes on)
     int source_ = -1;
     bool have_world_ = false;
     net::WorldMsg world_;

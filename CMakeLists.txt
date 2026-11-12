@@ -38,9 +38,13 @@ add_library(tldnet STATIC ${MOD_DIR}/src/net/session.cpp ${MOD_DIR}/src/net/udp_
 target_include_directories(tldnet PUBLIC ${MOD_DIR}/src)
 target_link_libraries(tldnet PUBLIC ws2_32)
 
+# The animals' arbiter: plain code (the mod's protocol.h and wildlife_own.h only), so it has a test without a network.
+add_library(tldserver_wildlife STATIC server/wildlife.cpp)
+target_include_directories(tldserver_wildlife PUBLIC ${CMAKE_SOURCE_DIR} ${MOD_DIR}/src)
+
 add_library(tldserver_core STATIC server/server.cpp server/world.cpp)
 target_include_directories(tldserver_core PUBLIC ${CMAKE_SOURCE_DIR})
-target_link_libraries(tldserver_core PUBLIC tldnet)
+target_link_libraries(tldserver_core PUBLIC tldnet tldserver_wildlife)
 
 add_executable(tldserver server/main.cpp)
 target_link_libraries(tldserver PRIVATE tldserver_core)
@@ -53,3 +57,6 @@ target_link_libraries(world_test PRIVATE tldserver_core)
 
 add_executable(shared_test tests/shared_test.cpp)
 target_link_libraries(shared_test PRIVATE tldserver_core)
+
+add_executable(wildlife_test tests/wildlife_test.cpp)
+target_link_libraries(wildlife_test PRIVATE tldserver_wildlife)

@@ -274,8 +274,19 @@ void write_host_file(const std::filesystem::path& file) {
         records.push_back(world_keep::record(world_keep::Tag::ContainerOurs, w));
     }
     {
-        world_keep::Record r;  // an animal of the host's registry: not ours to read yet, but never lost
-        r.tag = world_keep::Tag::Wildlife;
+        net::WildCtlMsg k;  // an animal of the host's registry
+        k.op = net::WildOp::Keep;
+        k.id = 4242;
+        k.scene = "CampOffice";
+        k.hours = 819.7;  // (the host's own game hours)
+        k.state.id = 4242;
+        k.state.kind = 1;
+        k.state.hp = 80;
+        net::Writer w(net::Msg::WildCtl, net::kMaxMessage);
+        net::write_wild_ctl(w, k);
+        records.push_back(world_keep::record(world_keep::Tag::Wildlife, w));
+        world_keep::Record r;  // a record of a kind we don't know: never lost
+        r.tag = static_cast<world_keep::Tag>(99);
         r.msg = {1, 2, 3, 4, 5, 6, 7, 8, 9};
         records.push_back(r);
     }
@@ -500,7 +511,8 @@ int main() {
     server->stop();
     server.reset();
     server = start_server(host_file);
-    check(server != nullptr && server->world().counts().other == 1, "records not ours to read yet (animals) are written back");
+    check(server != nullptr && server->world().counts().other == 1, "records of a kind we don't know are written back");
+    check(server != nullptr && server->world().wildlife().animals() == 1, "the host's animals are in the registry, and stay in the file");
     if (server) {
         Player f("Szymon");
         std::vector<Player*> fourth = {&f};

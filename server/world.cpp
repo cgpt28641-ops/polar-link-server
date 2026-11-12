@@ -24,6 +24,7 @@ constexpr uint8_t kTagServerSeq = 200;
 constexpr uint8_t kTagClock = 201;     // a World message: the clock, weather and wind as the world source last gave them
 constexpr uint8_t kTagMode = 202;      // a GameMode message: the world's experience mode and seed
 constexpr uint8_t kTagFeatures = 203;  // a Features message: the world's feature switches
+constexpr uint8_t kTagHours = 204;     // f64: the world's hours (server/world.h hours_)
 constexpr double kFollowMs = 6000;     // a game follows the kept clock this long before it may be the world source
 constexpr double kSourceAwayMs = 30000;  // the source may be out of the game (a door, a region loading) this long
 constexpr double kFlagsMs = 2000;      // Msg::Server to each player this often
@@ -56,7 +57,13 @@ void add_record(std::string& data, uint32_t& count, Tag tag, const net::Writer& 
 
 }  // namespace
 
-World::World(net::Session& session, LogFn log) : session_(session), log_(std::move(log)) {}
+World::World(net::Session& session, LogFn log)
+    : session_(session),
+      log_(std::move(log)),
+      wildlife_(Wildlife::Out{[this](uint8_t to, const net::Writer& w, bool reliable) { session_.send_packet_to(to, w, reliable); },
+                              [this](uint8_t but, const net::Writer& w, bool reliable) { session_.send_packet_except(but, w, reliable); },
+                              [this](const net::Writer& w, bool reliable) { session_.send_packet(w, reliable); }},
+                log_) {}
 
 void World::logf(const char* fmt, ...) {
     char line[768];
@@ -102,7 +109,16 @@ bool World::load(const std::filesystem::path& file) {
     std::stable_sort(records.begin(), records.end(),
                      [&](const world_keep::Record& a, const world_keep::Record& b) { return !later(a.tag) && later(b.tag); });
     size_t bad = 0;
+    bool own_hours = false;  // written by a server (else: a host's own file, whose game hours aren't ours)
     for (const world_keep::Record& r : records) {
+        if (static_cast<uint8_t>(r.tag) == kTagHours) {
+            if (r.msg.size() == sizeof(double)) memcpy(&hours_, r.msg.data(), sizeof(hours_)), own_hours = true;
+            continue;
+        }
+        if (r.tag == Tag::Wildlife || r.tag == Tag::WildRegions) {
+            if (!wildlife_.load(r.tag == Tag::WildRegions, r.msg)) ++bad;
+            continue;
+        }
         if (static_cast<uint8_t>(r.tag) == kTagServerSeq) {
             if (r.msg.size() == sizeof(uint32_t)) {
                 memcpy(&seq_, r.msg.data(), sizeof(seq_));
@@ -123,7 +139,7 @@ bool World::load(const std::filesystem::path& file) {
         }
         if (static_cast<uint8_t>(r.tag) == kTagFeatures) {
             float snow = -1;
-            if (net::read_features(body, features_, snow)) have_features_ = true;
+            if (net::read_features(body, features_, snow)) have_features_ = true, features_ |= net::kFeatureWildOwnership;
             continue;
         }
         bool ok = false;
@@ -204,6 +220,7 @@ bool World::load(const std::filesystem::path& file) {
         }
         if (!ok) ++bad;
     }
+    if (!own_hours) wildlife_.rebase(hours_);  // frozen animals and spawn regions count from now
     dirty_ = false;
     logf("world: loaded %s: %s%s", file.filename().string().c_str(), describe().c_str(),
          bad ? (" (" + std::to_string(bad) + " record(s) unreadable, dropped)").c_str() : "");
@@ -266,6 +283,11 @@ bool World::save(const std::filesystem::path& file) {
         records.append(reinterpret_cast<const char*>(msg.data()), msg.size());
         ++count;
     }
+    wildlife_.save([&](bool regions, const net::Writer& w) { add_record(records, count, regions ? Tag::WildRegions : Tag::Wildlife, w); });
+    records += static_cast<char>(kTagHours);
+    put_u32(records, sizeof(double));
+    records.append(reinterpret_cast<const char*>(&hours_), sizeof(hours_));
+    ++count;
     auto add_own = [&](uint8_t tag, const net::Writer& w) {
         if (!w.ok()) return;
         records += static_cast<char>(tag);
@@ -340,7 +362,7 @@ World::Counts World::counts() const {
 
 std::string World::describe() const {
     const Counts c = counts();
-    char line[480];
+    char line[640];
     char clock[64] = "none yet";
     if (have_world_) {
         const int minutes = static_cast<int>((world_.normalized_time - std::floor(world_.normalized_time)) * 1440.0f + 0.5f) % 1440;
@@ -348,9 +370,10 @@ std::string World::describe() const {
     }
     snprintf(line, sizeof(line),
              "%zu scene(s) (%zu with a whole item list), %zu item(s), %zu taken, %zu container(s), %zu object(s), "
-             "%zu fire(s), %zu water source(s), %zu other record(s); clock %s, mode %s, features %s",
-             c.scenes, c.listed_scenes, c.items, c.gone, c.containers, c.objects, c.fires, c.water, c.other, clock,
-             have_mode_ ? "kept" : "none yet", have_features_ ? "kept" : "none yet");
+             "%zu fire(s), %zu water source(s), %zu animal(s), spawn regions of %zu scene(s), %zu other record(s); clock %s, "
+             "mode %s, features %s",
+             c.scenes, c.listed_scenes, c.items, c.gone, c.containers, c.objects, c.fires, c.water, wildlife_.animals(),
+             wildlife_.region_scenes(), c.other, clock, have_mode_ ? "kept" : "none yet", have_features_ ? "kept" : "none yet");
     return line;
 }
 
@@ -371,6 +394,10 @@ bool World::newest(const net::Packet& p, const std::string& key, uint32_t seq) {
 
 bool World::on_packet(const net::Packet& p, double now_ms) {
     if (shared_packet(p)) return true;
+    if (wildlife_.on_packet(p, now_ms)) {
+        dirty_ |= wildlife_.take_dirty();
+        return true;
+    }
     net::Reader r = net::packet_body(p);
     switch (p.type) {
         case net::Msg::ItemPut: {
@@ -709,6 +736,11 @@ bool World::shared_packet(const net::Packet& p) {
             if (static_cast<int>(p.from) != source_ || !net::read_world(r, w) || !w.valid) return true;
             w.world_id = "server";  // one world whoever's game runs its clock (the mod's first-join rule goes by it)
             const bool first = !have_world_;
+            if (!first) {  // the world's hours: the clock's steps forward, whichever day a game's own save is on
+                float step = w.normalized_time - world_.normalized_time;
+                if (step < -0.5f) step += 1.0f;
+                if (step > 0 && step <= 0.5f) hours_ += static_cast<double>(step) * 24.0;
+            }
             world_ = w;
             have_world_ = true;
             dirty_ = true;
@@ -736,7 +768,7 @@ bool World::shared_packet(const net::Packet& p) {
             float snow = -1;
             if (!net::read_features(r, bits, snow)) return true;
             if (!have_features_) {
-                features_ = bits;
+                features_ = bits | net::kFeatureWildOwnership;  // (animals on a server: always each run by one game)
                 have_features_ = true;
                 dirty_ = true;
                 net::Writer w(net::Msg::Features, 64);
@@ -822,6 +854,24 @@ void World::shared_tick(const net::Status& st, double now_ms) {
 void World::tick(double now_ms) {
     const net::Status st = session_.status();
     shared_tick(st, now_ms);
+    {
+        std::vector<Wildlife::Present> present;
+        for (const net::PlayerInfo& p : st.players) {
+            if (p.id == 0 || p.id >= net::kMaxPlayers || !p.linked) continue;
+            const auto state = session_.remote_state(p.id);
+            if (!state || !state->valid || state->scene.empty()) continue;
+            Wildlife::Present w;
+            w.id = p.id;
+            w.scene = state->scene;
+            w.x = state->x, w.y = state->y, w.z = state->z;
+            w.yaw = state->yaw;
+            w.inside = !state->place.empty();
+            w.rtt_ms = p.rtt_ms > 0 ? p.rtt_ms : 0;
+            present.push_back(std::move(w));
+        }
+        wildlife_.tick(present, now_ms, hours_);
+        dirty_ |= wildlife_.take_dirty();
+    }
     std::array<bool, net::kMaxPlayers> linked{};
     for (const net::PlayerInfo& p : st.players) {
         if (p.id == 0 || p.id >= net::kMaxPlayers || !p.linked) continue;

@@ -159,7 +159,7 @@ int main() {
     pump(*server, all, 1200);
     check(a.flags == (kServerIs | kServerWorldSource), "once given, the server stops asking for mode and switches");
     check(server->world().has_clock() && server->world().has_mode() && server->world().has_features(), "the server keeps all three");
-    check(a.features == 9, "the giver hears the kept switches back (every game follows what is kept)");
+    check(a.features == (9 | 16), "the giver hears the kept switches back (every game follows what is kept)");
 
     check(b.start(), "a second player joins");
     all.push_back(&b);
@@ -173,11 +173,11 @@ int main() {
         check(w && w->world_id == "server", "under one world id, whoever's game runs the clock");
     }
     check(b.mode == kMode && b.seed == 777, "it gets the kept experience mode and seed");
-    check(b.features == 9, "and the kept switches");
+    check(b.features == (9 | 16), "and the kept switches (animals: always each run by one game)");
 
     a.send_features(1, 33.0f);  // (the source's own switches differ now: only its trees' snow counts)
     pump(*server, all, 600);
-    check(b.features == 9 && near(b.snow, 33.0f), "the source's trees' snow goes on, with the kept switches");
+    check(b.features == (9 | 16) && near(b.snow, 33.0f), "the source's trees' snow goes on, with the kept switches");
     b.send_world(0.9f);
     b.send_mode("{\"m_CurrentModeType\":\"Pilgrim\"}", 1);
     b.send_features(64, 1.0f);
@@ -186,7 +186,7 @@ int main() {
         const auto w = a.session.remote_world();
         check(w && near(w->normalized_time, 0.5f), "a World from a game that isn't the source is ignored");
     }
-    check(a.mode.empty() && a.features == 9, "so are a second mode and second switches");
+    check(a.mode.empty() && a.features == (9 | 16), "so are a second mode and second switches");
 
     a.publishing = false;
     a.session.stop();
@@ -215,7 +215,7 @@ int main() {
         const auto w = c.session.remote_world();
         check(w && w->valid && near(w->normalized_time, 0.6f), "it gets the clock as it stood when the last game left");
     }
-    check(c.mode == kMode && c.seed == 777 && c.features == 9, "and the mode, seed and switches");
+    check(c.mode == kMode && c.seed == 777 && c.features == (9 | 16), "and the mode, seed and switches");
     check(c.flags == kServerIs && server->world().source() < 0, "it follows the kept clock first: not the source yet");
     pump(*server, all, 5000);
     check(c.flags == (kServerIs | kServerWorldSource), "after a few seconds it runs the clock");
