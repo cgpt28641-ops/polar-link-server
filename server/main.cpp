@@ -28,6 +28,9 @@
 #ifndef TLDSERVER_BUILD
 #define TLDSERVER_BUILD "local"
 #endif
+#ifndef TLDSERVER_MOD
+#define TLDSERVER_MOD "?"
+#endif
 
 namespace {
 
@@ -111,7 +114,7 @@ int main(int argc, char** argv) {
         opt.game_version = read_trimmed(std::filesystem::path(game_dir) / "tld_Data" / "StreamingAssets" / "version.txt");
     if (opt.game_version.empty()) opt.game_version = read_trimmed(exe_dir / "version.txt");
 
-    out(std::string("tldserver build ") + TLDSERVER_BUILD + " (protocol " + std::to_string(net::kProtocolVersion) + ")");
+    out(std::string("tldserver build ") + TLDSERVER_BUILD + ", mod " + TLDSERVER_MOD + " (protocol " + std::to_string(net::kProtocolVersion) + ")");
     if (opt.game_version.empty()) {
         out("no game version: copy tld_Data\\StreamingAssets\\version.txt from the game next to tldserver.exe, or "
             "start with --game-version V / --game-dir DIR");
