@@ -37,7 +37,7 @@ add_library(tldnet STATIC ${MOD_DIR}/src/net/session.cpp ${MOD_DIR}/src/net/udp_
 target_include_directories(tldnet PUBLIC ${MOD_DIR}/src)
 target_link_libraries(tldnet PUBLIC ws2_32)
 
-add_library(tldserver_core STATIC server/server.cpp)
+add_library(tldserver_core STATIC server/server.cpp server/world.cpp)
 target_include_directories(tldserver_core PUBLIC ${CMAKE_SOURCE_DIR})
 target_link_libraries(tldserver_core PUBLIC tldnet)
 
@@ -46,3 +46,6 @@ target_link_libraries(tldserver PRIVATE tldserver_core)
 
 add_executable(server_test tests/server_test.cpp)
 target_link_libraries(server_test PRIVATE tldserver_core)
+
+add_executable(world_test tests/world_test.cpp)
+target_link_libraries(world_test PRIVATE tldserver_core)

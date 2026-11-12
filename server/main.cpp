@@ -1,11 +1,13 @@
 // tldserver: the TLDCoop_DLC (polar-link) dedicated server. No game needed.
 //
-//   tldserver [--port 27015] [--bind 0.0.0.0] [--name Serwer] [--game-version V | --game-dir DIR]
+//   tldserver [--port 27015] [--bind 0.0.0.0] [--name Serwer] [--game-version V | --game-dir DIR] [--world FILE]
 //
+// The world is kept in FILE (default: world.bin next to tldserver.exe), written every 30 s when it changed and on
+// stop. A host's own worlds\<save>.bin (the mod's world_keep file) can be copied there to start from that world.
 // The game version must be the players' exactly: given with --game-version, read from
 // DIR/tld_Data/StreamingAssets/version.txt with --game-dir, or from version.txt next to tldserver.exe (copy it there
 // from the game).
-// Console: players | kick <id> | say <text> | stop (also Ctrl+C). Everything is written to tldserver.log too.
+// Console: players | kick <id> | say <text> | world | save | stop (also Ctrl+C). Everything is written to tldserver.log too.
 
 #include <atomic>
 #include <chrono>
@@ -96,8 +98,9 @@ int main(int argc, char** argv) {
         else if (a == "--name") opt.name = next();
         else if (a == "--game-version") opt.game_version = next();
         else if (a == "--game-dir") game_dir = next();
+        else if (a == "--world") opt.world_file = next();
         else if (a == "--help" || a == "-h" || a == "/?") {
-            std::printf("tldserver [--port 27015] [--bind 0.0.0.0] [--name Serwer] [--game-version V | --game-dir DIR]\n");
+            std::printf("tldserver [--port 27015] [--bind 0.0.0.0] [--name Serwer] [--game-version V | --game-dir DIR] [--world FILE]\n");
             return 0;
         } else {
             std::printf("unknown option '%s' (--help)\n", a.c_str());
@@ -115,12 +118,14 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (opt.world_file.empty()) opt.world_file = (exe_dir / "world.bin").string();
+
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
 
     srv::Server server(out);
     if (!server.start(opt)) {
-        out("could not start (is the port in use?)");
+        out("could not start (the world file unreadable, or the port in use?)");
         return 3;
     }
     out("type 'help' for commands");

@@ -1,8 +1,8 @@
 #pragma once
-// tldserver's core: the shared co-op game without a game. Stage 0 (see SERVER_PLAN.md in the mod's repo): it sits in
-// the host's seat of a net::Session (player 0, "Serwer"), never shows a body of its own (its State is never valid),
-// lets everyone in (up to the session's 3 friends for now), passes on the players' states (the session does that)
-// and chat, and answers the console. The world store comes in stage 1.
+// tldserver's core: the shared co-op game without a game (see SERVER_PLAN.md in the mod's repo). It sits in the
+// host's seat of a net::Session (player 0, "Serwer"), never shows a body of its own (its State is never valid), lets
+// everyone in (up to the session's 3 friends for now), passes on the players' states (the session does that) and
+// chat, keeps the shared world (server/world.h) in a file, and answers the console.
 //
 // Threading: everything from one thread (the server's loop), like net::Session's update().
 
@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "net/session.h"
+#include "server/world.h"
 
 namespace srv {
 
@@ -20,6 +21,8 @@ struct Options {
     uint16_t port = 27015;
     std::string name = "Serwer";   // how the players see the server in their list
     std::string game_version;      // must match the players' TLD exactly (tld_Data/StreamingAssets/version.txt)
+    std::string world_file;        // the world's file ("" = nothing is read or written: tests)
+    double save_every_s = 30;      // a changed world is written this often (and on stop)
 };
 
 struct PlayerLine {
@@ -47,6 +50,8 @@ public:
     std::vector<PlayerLine> players() const;
     bool kick(uint8_t id);                // turned away for as long as this server runs
     void say(const std::string& text);    // a chat line from the server to everyone
+    bool save();                          // write the world now
+    const World& world() const { return world_; }
     // A console line ("players", "kick 2", "say hello", "help"). Returns the answer; sets *quit on "stop".
     std::string command(const std::string& line, bool* quit);
 
@@ -59,6 +64,8 @@ private:
     LogFn log_;
     Options opt_;
     net::Session session_;
+    World world_;
+    double last_save_ms_ = 0;
     bool started_ = false;
     uint64_t chat_passed_ = 0;
     std::vector<net::Packet> in_;

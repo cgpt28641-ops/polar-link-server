@@ -6,12 +6,14 @@
 
 namespace srv {
 
-Server::Server(LogFn log) : log_(std::move(log)), session_(log_) {}
+Server::Server(LogFn log) : log_(std::move(log)), session_(log_), world_(session_, log_) {}
 
 Server::~Server() { stop(); }
 
 bool Server::start(const Options& options) {
     opt_ = options;
+    if (!opt_.world_file.empty() && !world_.load(opt_.world_file)) return false;  // never write over one we can't read
+    last_save_ms_ = net::now_ms();
     net::Config cfg;
     cfg.role = net::Role::Host;
     cfg.transport = "udp";
@@ -42,7 +44,18 @@ void Server::update() {
     if (!started_) return;
     session_.update();
     on_packets();
+    const double now = net::now_ms();
+    world_.tick(now);
     report_changes();
+    if (world_.dirty() && now - last_save_ms_ >= opt_.save_every_s * 1000) save();
+}
+
+bool Server::save() {
+    last_save_ms_ = net::now_ms();
+    if (opt_.world_file.empty()) return false;
+    if (!world_.save(opt_.world_file)) return false;
+    log_("world: saved (" + world_.describe() + ")");
+    return true;
 }
 
 void Server::wait(int timeout_ms) {
@@ -52,6 +65,7 @@ void Server::wait(int timeout_ms) {
 void Server::stop() {
     if (!started_) return;
     started_ = false;
+    if (world_.dirty()) save();
     session_.stop();
     log_("server stopped");
 }
@@ -59,7 +73,9 @@ void Server::stop() {
 void Server::on_packets() {
     in_.clear();
     session_.drain_packets(in_);
+    const double now = net::now_ms();
     for (const net::Packet& p : in_) {
+        if (world_.on_packet(p, now)) continue;
         switch (p.type) {
             case net::Msg::Chat: {  // as the host's game does: pass a friend's line on to the others
                 net::Reader r = net::packet_body(p);
@@ -73,7 +89,7 @@ void Server::on_packets() {
                 break;
             }
             default:
-                break;  // stage 0: the world messages aren't kept yet (stage 1)
+                break;  // animals, sleep, the train...: later stages
         }
     }
 }
@@ -132,7 +148,7 @@ std::string Server::command(const std::string& line, bool* quit) {
     std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
     if (cmd.empty()) return {};
     if (cmd == "help" || cmd == "?")
-        return "players | kick <id> | say <text> | stop";
+        return "players | kick <id> | say <text> | world | save | stop";
     if (cmd == "players") {
         const auto list = players();
         if (list.empty()) return "nobody is in";
@@ -161,6 +177,11 @@ std::string Server::command(const std::string& line, bool* quit) {
         if (text.empty()) return "say <text>";
         say(text);
         return "said";
+    }
+    if (cmd == "world") return world_.describe();
+    if (cmd == "save") {
+        if (opt_.world_file.empty()) return "no world file";
+        return save() ? "saved" : "couldn't save (see above)";
     }
     if (cmd == "stop" || cmd == "quit" || cmd == "exit") {
         if (quit) *quit = true;
