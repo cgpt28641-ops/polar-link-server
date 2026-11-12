@@ -109,7 +109,7 @@ bool World::load(const std::filesystem::path& file) {
         switch (r.tag) {
             case Tag::ItemRecord: {
                 net::ItemPutMsg m;
-                if (p.type == net::Msg::ItemPut && (ok = net::read_item_put(body, m))) {
+                if (p.type == net::Msg::ItemPut && (ok = net::read_item_put(body, m, true))) {  // (kept: maybe pre-v51)
                     Scene& s = scenes_[m.scene];
                     s.items[m.pdid] = std::move(m);
                 }
@@ -127,7 +127,7 @@ bool World::load(const std::filesystem::path& file) {
             case Tag::ItemChange: {
                 if (p.type == net::Msg::ItemPut) {
                     net::ItemPutMsg m;
-                    if ((ok = net::read_item_put(body, m))) {
+                    if ((ok = net::read_item_put(body, m, true))) {
                         Scene& s = scenes_[m.scene];
                         s.gone.erase(m.pdid);
                         if (s.listed) s.list.insert(net::pdid_hash(m.pdid));

@@ -72,7 +72,9 @@ struct Player {
         }
         return out;
     }
-    std::vector<net::ItemPutMsg> puts() const { return all<net::ItemPutMsg>(net::Msg::ItemPut, net::read_item_put); }
+    std::vector<net::ItemPutMsg> puts() const {
+        return all<net::ItemPutMsg>(net::Msg::ItemPut, [](net::Reader& r, net::ItemPutMsg& m) { return net::read_item_put(r, m); });
+    }
     std::vector<net::ItemGoneMsg> gones() const { return all<net::ItemGoneMsg>(net::Msg::ItemGone, net::read_item_gone); }
     std::vector<net::ItemHashesMsg> lists() const { return all<net::ItemHashesMsg>(net::Msg::ItemList, net::read_item_hashes); }
     std::vector<net::ContainerPutMsg> containers() const {
@@ -238,6 +240,19 @@ void write_host_file(const std::filesystem::path& file) {
         net::Writer w(net::Msg::ItemGone);
         net::write_item_gone(w, m);
         records.push_back(world_keep::record(world_keep::Tag::ItemChange, w));
+    }
+    {
+        // (a record kept before protocol v51: no pot-owner byte at its end; it must still load)
+        net::ItemPutMsg m;
+        m.scene = "CampOffice";
+        m.pdid = "cabin-old";
+        m.prefab = "GEAR_Can";
+        m.gear = "{\"record\":\"cabin-old\"}";
+        net::Writer w(net::Msg::ItemPut, net::kMaxMessage);
+        net::write_item_put(w, m);
+        world_keep::Record r = world_keep::record(world_keep::Tag::ItemRecord, w);
+        r.msg.pop_back();
+        records.push_back(r);
     }
     {
         net::ItemPutMsg m;  // ...and dropped D
@@ -474,6 +489,11 @@ int main() {
           "asked for, the items come whole (the one taken since doesn't)");
     check(count(e.containers(), [](const auto& m) { return m.id == "cabin-locker" && m.text == "{\"locker\":1}"; }) == 1,
           "the host's containers answer too");
+    e.got.clear();
+    e.want_items("CampOffice", {net::pdid_hash("cabin-old")});
+    pump(*server, third, 600);
+    check(count(e.puts(), [](const auto& m) { return m.pdid == "cabin-old" && m.owner == net::kNoPotOwner; }) == 1,
+          "an item record kept before v51 (no owner byte) loads too");
     e.take_item("CampOffice", "cabin-A");
     pump(*server, third, 1500);
     e.session.stop();
