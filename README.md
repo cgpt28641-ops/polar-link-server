@@ -11,23 +11,39 @@ submoduł `mod/`, więc serwer zawsze mówi tym samym protokołem co mod.
 Najnowszy `tldserver.exe` (budowany po każdym pushu na `main`):
 https://github.com/cgpt28641-ops/polar-link-server/releases/download/server-latest/tldserver.exe
 
-## Uruchomienie (etap 0)
+## Uruchomienie
 
 1. Wrzuć `tldserver.exe` do dowolnego folderu.
 2. Obok niego skopiuj `version.txt` z gry: `The Long Dark\tld_Data\StreamingAssets\version.txt`. Wersja gry musi
    się zgadzać z wersją u graczy.
-3. Uruchom `tldserver.exe`. Domyślnie słucha na UDP 27015. Opcje: `--port`, `--name`, `--game-version`, `--game-dir`.
-4. Komendy w konsoli: `players`, `kick <id>`, `say <tekst>`, `stop`. Wszystko trafia też do `tldserver.log`.
+3. Uruchom `tldserver.exe`. Domyślnie słucha na UDP 27015. Opcje: `--port`, `--name`, `--game-version`, `--game-dir`,
+   `--world PLIK`.
+4. Komendy w konsoli: `players`, `kick <id>`, `say <tekst>`, `world`, `save`, `stop`. Wszystko trafia też do
+   `tldserver.log`.
 
-W grze: tryb `join` z IP serwera i portem, tak jak przy dołączaniu do hosta po IP.
+W grze: w `coop.ini` w sekcji `[net]` ustaw `transport=local`, `host_ip=<IP serwera>` i `port=27015`, a potem dołącz
+z menu CO-OP (tak jak do hosta po IP).
 
-## Etap 0: co działa
+## Świat
+
+Serwer trzyma świat w pliku `world.bin` obok exe (albo w pliku z `--world`). Zapisuje go co 30 s, jeśli coś się
+zmieniło, oraz przy `stop`. Zapis idzie najpierw do `world.bin.tmp`, a potem plik jest podmieniany, więc po padzie
+komputera zostaje stary albo nowy plik, nigdy uszkodzony.
+
+Format jest ten sam co plik hosta z moda (`TLDCoop\worlds\<zapis>.bin`). Żeby zacząć od świata hosta, skopiuj ten
+plik jako `world.bin`.
+
+## Co działa
 
 - Do 3 graczy naraz (tyle, ilu przyjaciół obsługuje dziś sesja moda).
 - Gracze widzą się nawzajem. Serwer jest na liście graczy jako „Serwer”, ale nie ma postaci.
-- Czat jest przekazywany dalej, a serwer może pisać komendą `say`.
-- **Jeszcze nie ma:** zapisu świata (przedmioty, kontenery, ogniska itd.), zegara, pogody ani zwierząt. Kolejne
-  etapy to dodadzą, więc na razie służy to do sprawdzenia połączenia, a nie do normalnej gry.
+- Czat, ślady krwi, spray, światła w domach i podawanie przedmiotów są przekazywane dalej.
+- Przedmioty na ziemi, kontenery (z blokadą „jeden gracz naraz”), rozebrane meble, zebrane rośliny, zamki, ciała,
+  ogniska i źródła wody: serwer pamięta zmiany w każdej scenie, przekazuje je innym i wysyła graczowi, który wchodzi
+  do sceny. Gdy dwóch graczy weźmie ten sam przedmiot, dostaje go jeden.
+- **Jeszcze nie ma:** zegara i pogody z serwera, zwierząt, wspólnego snu, pociągu, dołączania kodem Steam. Te rzeczy
+  wymagają też zmian w modzie.
+- Sprawdzone tylko testami z udawanymi graczami, jeszcze nie z prawdziwą grą.
 
 ## Budowanie
 
@@ -38,4 +54,5 @@ git clone --recursive https://github.com/cgpt28641-ops/polar-link-server
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 build\server_test.exe
+build\world_test.exe
 ```
