@@ -63,7 +63,14 @@ World::World(net::Session& session, LogFn log)
       wildlife_(Wildlife::Out{[this](uint8_t to, const net::Writer& w, bool reliable) { session_.send_packet_to(to, w, reliable); },
                               [this](uint8_t but, const net::Writer& w, bool reliable) { session_.send_packet_except(but, w, reliable); },
                               [this](const net::Writer& w, bool reliable) { session_.send_packet(w, reliable); }},
-                log_) {}
+                log_),
+      sleep_(
+          [this](const net::SleepMsg& m) {
+              net::Writer w(net::Msg::Sleep);
+              net::write_sleep(w, m);
+              session_.send_packet(w, true);
+          },
+          log_) {}
 
 void World::logf(const char* fmt, ...) {
     char line[768];
@@ -353,6 +360,18 @@ std::string World::clock_text() const {
     return std::string(clock) + (weather.empty() ? "" : ", " + weather);
 }
 
+// The clock a shared sleep counts from: the kept world's, moved on by the time since its newest message while a game
+// runs it. Dawn and dusk: TLD's usual hours (no game tells the server its own).
+net::SleepClock World::sleep_clock(double now_ms) const {
+    net::SleepClock k;
+    if (!have_world_) return k;
+    double t = world_.normalized_time;
+    const double age_s = (now_ms - world_ms_) / 1000.0;
+    if (source_ >= 0 && world_.day_length_s > 0 && age_s > 0 && age_s < 5) t += age_s / world_.day_length_s;
+    k.now_h = static_cast<float>((t - std::floor(t)) * 24.0);
+    return k;
+}
+
 World::Counts World::counts() const {
     Counts c;
     c.scenes = scenes_.size();
@@ -399,7 +418,14 @@ bool World::newest(const net::Packet& p, const std::string& key, uint32_t seq) {
 }
 
 bool World::on_packet(const net::Packet& p, double now_ms) {
+    if (p.type == net::Msg::World && static_cast<int>(p.from) == source_) world_ms_ = now_ms;
     if (shared_packet(p)) return true;
+    if (p.type == net::Msg::Sleep) {
+        net::Reader body = net::packet_body(p);
+        net::SleepMsg m;
+        if (net::read_sleep(body, m)) sleep_.on_msg(p.from, m, now_ms);
+        return true;
+    }
     if (wildlife_.on_packet(p, now_ms)) {
         dirty_ |= wildlife_.take_dirty();
         return true;
@@ -877,6 +903,23 @@ void World::tick(double now_ms) {
         }
         wildlife_.tick(present, now_ms, hours_);
         dirty_ |= wildlife_.take_dirty();
+    }
+    {
+        // Sleeping together: everyone whose game is in (a menu or loading isn't waited for), as their State says.
+        std::vector<net::Sleeper> sleepers;
+        for (const net::PlayerInfo& p : st.players) {
+            if (p.id == 0 || p.id >= net::kMaxPlayers || !p.linked) continue;
+            const auto state = session_.remote_state(p.id);
+            if (!state || !state->valid) continue;
+            net::Sleeper s{p.id, false, net::SleepChoice::None, false};
+            if (state->flags & net::kStateInBed) {
+                s.in_bed = true;
+                s.waiting = (state->flags & net::kStateWaiting) != 0;
+                if (net::is_sleep_choice(state->sleep_vote)) s.vote = static_cast<net::SleepChoice>(state->sleep_vote);
+            }
+            sleepers.push_back(s);
+        }
+        sleep_.tick(sleepers, sleep_clock(now_ms), now_ms);
     }
     std::array<bool, net::kMaxPlayers> linked{};
     for (const net::PlayerInfo& p : st.players) {

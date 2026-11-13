@@ -39,7 +39,7 @@ target_include_directories(tldnet PUBLIC ${MOD_DIR}/src)
 target_link_libraries(tldnet PUBLIC ws2_32)
 
 # The animals' arbiter: plain code (the mod's protocol.h and wildlife_own.h only), so it has a test without a network.
-add_library(tldserver_wildlife STATIC server/wildlife.cpp)
+add_library(tldserver_wildlife STATIC server/wildlife.cpp server/sleep.cpp)
 target_include_directories(tldserver_wildlife PUBLIC ${CMAKE_SOURCE_DIR} ${MOD_DIR}/src)
 
 add_library(tldserver_core STATIC server/server.cpp server/world.cpp)
@@ -60,3 +60,6 @@ target_link_libraries(shared_test PRIVATE tldserver_core)
 
 add_executable(wildlife_test tests/wildlife_test.cpp)
 target_link_libraries(wildlife_test PRIVATE tldserver_wildlife)
+
+add_executable(sleep_test tests/sleep_test.cpp)
+target_link_libraries(sleep_test PRIVATE tldserver_wildlife)

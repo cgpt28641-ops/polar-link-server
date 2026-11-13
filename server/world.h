@@ -14,6 +14,7 @@
 //   fires, water  the newest FirePut / WaterPut per fire / source.
 //   animals     the mod's wildlife ownership with the host's part done here (server/wildlife.h): the registry, who
 //               runs which animal, who spawns where, deaths and spawn regions; kept in the file too.
+//   sleep       sleeping and passing time together: decided here from the players' States (server/sleep.h).
 //   passed on   blood, spray paint, house lights, handing an item over (Give): to the other players, nothing kept.
 //   clock, weather, mode, seed, feature switches: the server has no game to run them. One player's game at a time is
 //               the "world source" (the mod's coop_server.h): its World (clock, weather, wind) comes here, is kept and
@@ -37,6 +38,7 @@
 #include "net/claims.h"
 #include "net/container_locks.h"
 #include "net/session.h"
+#include "server/sleep.h"
 #include "server/wildlife.h"
 
 namespace srv {
@@ -60,6 +62,7 @@ public:
     bool has_features() const { return have_features_; }
     bool has_clock() const { return have_world_; }
     const Wildlife& wildlife() const { return wildlife_; }
+    const Sleep& sleep() const { return sleep_; }
     // Every round: arrivals, locks whose player went quiet or left.
     void tick(double now_ms);
 
@@ -113,6 +116,7 @@ private:
     void tell_lock(const std::string& key, int to = -1);
     void not_yours(uint8_t to, const std::string& scene, const std::string& pdid, bool tossed);
     void send_scene(uint8_t to, const std::string& scene);
+    net::SleepClock sleep_clock(double now_ms) const;
     void logf(const char* fmt, ...);
 
     net::Session& session_;
@@ -126,6 +130,8 @@ private:
     double last_lock_tick_ = 0;
     std::array<Friend, net::kMaxPlayers> friends_{};
     Wildlife wildlife_;
+    Sleep sleep_;
+    double world_ms_ = 0;  // when the newest World came (the clock between two of them: sleep_clock)
     double hours_ = 0;  // the world's clock in game hours, counted from the clock's steps (it only ever goes on)
     int source_ = -1;
     bool have_world_ = false;
