@@ -68,6 +68,9 @@ komputera zostaje stary albo nowy plik, nigdy uszkodzony.
 Format jest ten sam co plik hosta z moda (`TLDCoop\worlds\<zapis>.bin`). Żeby zacząć od świata hosta, skopiuj ten
 plik jako `world.bin`.
 
+Przy każdym starcie serwer kopiuje `world.bin` do `backups\world-RRRRMMDD-GGMMSS.bin` (trzyma 20 ostatnich). Żeby
+cofnąć świat: zatrzymaj serwer i skopiuj wybrany plik jako `world.bin`.
+
 ## Co działa
 
 - Do 3 graczy naraz (tyle, ilu przyjaciół obsługuje dziś sesja moda).

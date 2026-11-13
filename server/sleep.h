@@ -9,7 +9,7 @@
 //   kDoneMs after Start                                      ->  End Done: a game still asleep ends its sleep
 //
 // The server is in no game, so it is never one of the sleepers (the mod's games leave out a host with no valid State
-// too). Someone in a menu or loading isn't waited for; someone who left isn't either. The clock is the kept world's
+// too), and a shared sleep is told only to those it was started for. Someone in a menu or loading isn't waited for; someone who left isn't either. The clock is the kept world's
 // (the "world source" game's); dawn and dusk are TLD's usual 7:00 and 19:00 unless a game said otherwise.
 //
 // No session here: what goes out goes through `Send`, so it is tested without a network. One thread.
@@ -26,7 +26,7 @@ namespace srv {
 
 class Sleep {
 public:
-    using Send = std::function<void(const net::SleepMsg& m)>;  // to every player
+    using Send = std::function<void(uint8_t to, const net::SleepMsg& m)>;  // to one player
     using LogFn = std::function<void(const std::string&)>;
 
     static constexpr double kSettleMs = 2000;  // the mod's: everyone in this long before the sleep starts
@@ -53,6 +53,8 @@ private:
     double started_ms_ = 0;
     bool done_sent_ = false;
     std::vector<uint8_t> in_;    // who it was started for and hasn't been seen up since
+    std::vector<uint8_t> all_;   // everyone it was started for (a game in a menu never hears of it: it would answer
+                                 // "not in bed" and wake the others)
     double settled_ms_ = 0;
 };
 

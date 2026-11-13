@@ -35,7 +35,7 @@ void Sleep::tick(const std::vector<net::Sleeper>& players, const net::SleepClock
                 m.op = net::SleepOp::End;
                 m.id = id_;
                 m.end = net::SleepEnd::Done;
-                send_(m);
+                for (uint8_t id : in_) send_(id, m);
                 logf("sleep: shared sleep #%u should be over: telling the %zu still in", id_, in_.size());
             }
         }
@@ -73,12 +73,14 @@ void Sleep::tick(const std::vector<net::Sleeper>& players, const net::SleepClock
     m.id = id_;
     m.choice = static_cast<uint8_t>(o.choice);
     m.hours = o.hours;
-    send_(m);
+    all_ = in_;
+    for (uint8_t id : all_) send_(id, m);
 }
 
 void Sleep::on_msg(uint8_t from, const net::SleepMsg& m, double now_ms) {
     (void)now_ms;
     if (m.op != net::SleepOp::Woke || !id_ || m.id != id_) return;  // Start and End are ours to send
+    if (std::find(all_.begin(), all_.end(), from) == all_.end()) return;  // (not one of its sleepers)
     const char* why = m.why == net::SleepWhy::Animal     ? "by an animal"
                       : m.why == net::SleepWhy::Cold     ? "by the cold"
                       : m.why == net::SleepWhy::NotInBed ? "wasn't in bed for it"
@@ -91,7 +93,8 @@ void Sleep::on_msg(uint8_t from, const net::SleepMsg& m, double now_ms) {
     end.end = net::SleepEnd::Woken;
     end.who = from;
     end.why = m.why;
-    send_(end);
+    for (uint8_t id : all_)
+        if (id != from) send_(id, end);
     done_sent_ = true;  // nothing more to say about this one
 }
 

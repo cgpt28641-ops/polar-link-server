@@ -51,7 +51,8 @@ public:
     std::vector<PlayerLine> players() const;
     bool kick(uint8_t id);                // turned away for as long as this server runs
     void say(const std::string& text);    // a chat line from the server to everyone
-    bool save();                          // write the world now
+    bool save();
+    void backup_world();                          // write the world now
     const World& world() const { return world_; }
     // A console line ("players", "kick 2", "say hello", "help"). Returns the answer; sets *quit on "stop".
     std::string command(const std::string& line, bool* quit);

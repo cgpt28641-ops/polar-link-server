@@ -65,10 +65,10 @@ World::World(net::Session& session, LogFn log)
                               [this](const net::Writer& w, bool reliable) { session_.send_packet(w, reliable); }},
                 log_),
       sleep_(
-          [this](const net::SleepMsg& m) {
+          [this](uint8_t to, const net::SleepMsg& m) {
               net::Writer w(net::Msg::Sleep);
               net::write_sleep(w, m);
-              session_.send_packet(w, true);
+              session_.send_packet_to(to, w, true);
           },
           log_) {}
 

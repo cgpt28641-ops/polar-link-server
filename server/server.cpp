@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace srv {
 
@@ -16,6 +17,7 @@ Server::~Server() { stop(); }
 bool Server::start(const Options& options) {
     opt_ = options;
     if (!opt_.world_file.empty() && !world_.load(opt_.world_file)) return false;  // never write over one we can't read
+    backup_world();
     last_save_ms_ = net::now_ms();
     net::Config cfg;
     cfg.role = net::Role::Host;
@@ -57,6 +59,41 @@ void Server::update() {
     if (world_.dirty() && now - last_save_ms_ >= opt_.save_every_s * 1000) save();
 }
 
+// The world file as it was when the server started, copied to backups/world-YYYYMMDD-HHMMSS.bin beside it (the newest
+// kMaxBackups kept): a bad session can be undone by putting one back as world.bin.
+void Server::backup_world() {
+    constexpr size_t kMaxBackups = 20;
+    if (opt_.world_file.empty()) return;
+    std::error_code ec;
+    const std::filesystem::path file(opt_.world_file);
+    if (!std::filesystem::is_regular_file(file, ec)) return;
+    const std::filesystem::path dir = file.parent_path() / "backups";
+    std::filesystem::create_directories(dir, ec);
+    const std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
+    const std::filesystem::path to = dir / (file.stem().string() + "-" + stamp + file.extension().string());
+    std::filesystem::copy_file(file, to, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        log_("world: couldn't make a backup in " + dir.string() + " (" + ec.message() + ")");
+        return;
+    }
+    log_("world: backup of the file as it was: backups/" + to.filename().string());
+    std::vector<std::filesystem::path> old;
+    const std::string prefix = file.stem().string() + "-";
+    for (const auto& e : std::filesystem::directory_iterator(dir, ec))
+        if (e.is_regular_file(ec) && e.path().filename().string().rfind(prefix, 0) == 0 && e.path().extension() == file.extension())
+            old.push_back(e.path());
+    std::sort(old.begin(), old.end());
+    for (size_t i = 0; i + kMaxBackups < old.size(); ++i) std::filesystem::remove(old[i], ec);
+}
+
 bool Server::save() {
     last_save_ms_ = net::now_ms();
     if (opt_.world_file.empty()) return false;
@@ -96,8 +133,20 @@ void Server::on_packets() {
                 log_("chat: " + who + ": " + said);
                 break;
             }
+            // F11 reports and "POBIERZ LOGI": as a host's game, on to the others as they came (the server has no log
+            // of a game to add; the asker gets the other players' logs)
+            case net::Msg::Report:
+            case net::Msg::LogsWant:
+            case net::Msg::LogsFile: {
+                if (p.data.size() <= net::kHeaderSize) break;
+                const size_t size = p.data.size() - net::kHeaderSize;
+                net::Writer w(p.type, size + 64);
+                w.put_raw(p.data.data() + net::kHeaderSize, size);
+                session_.send_packet_except(p.from, w, true);
+                break;
+            }
             default:
-                break;  // animals, sleep, the train...: later stages
+                break;  // (carcass harvests, the slot machine: not on the server yet)
         }
     }
 }
