@@ -38,6 +38,9 @@ struct Player {
     std::string list_scene;    // the last ItemList
     std::vector<uint64_t> list;
     std::vector<net::ItemPutMsg> puts;
+    int lights = -1;           // the last HouseLights' switch
+    int train_from = -1, train_flags = -1;
+    float train_velocity = -1;
     std::string mode;          // the last GameMode
     int32_t seed = 0;
     int features = -1;         // the last Features' bits
@@ -118,6 +121,14 @@ struct Player {
             } else if (p.type == net::Msg::ItemList) {
                 net::ItemHashesMsg m;
                 if (net::read_item_hashes(r, m)) list_scene = m.scene, list = m.hashes;
+            } else if (p.type == net::Msg::HouseLights) {
+                lights = r.get<uint8_t>();
+            } else if (p.type == net::Msg::Train) {
+                train_from = r.get<uint8_t>();
+                train_flags = r.get<uint8_t>();
+                r.get_blob(64), r.get_blob(64), r.get_blob(64);
+                r.get<float>(), r.get<uint8_t>(), r.get<uint8_t>();
+                train_velocity = r.get<float>();
             } else if (p.type == net::Msg::ItemPut) {
                 net::ItemPutMsg m;
                 if (net::read_item_put(r, m)) puts.push_back(m);
@@ -264,12 +275,41 @@ int main() {
     c.send_hashes(net::Msg::ItemList, {"stick-1", "stick-2", "native-3"});
     pump(*server, all, 2500);
     check(c.wanted.empty(), "given: the server stops asking");
+    {  // House Lights and the steam train, said before the next player comes
+        net::Writer w(net::Msg::HouseLights, 128);
+        w.put<uint8_t>(1);
+        w.put_blob("LakeRegion", 64);
+        c.session.send_packet(w, true);
+        net::Writer t(net::Msg::Train, 320);
+        t.put<uint8_t>(c.session.status().self_id);
+        t.put<uint8_t>(1 | 2);  // driving, inside
+        t.put_blob("LakeRegion", 64);
+        t.put_blob("train-guid", 64);
+        t.put_blob("spline-a", 64);
+        t.put<float>(123.5f);
+        t.put<uint8_t>(1);
+        t.put<uint8_t>(0);
+        t.put<float>(9.0f);  // velocity
+        t.put<float>(1.0f);
+        t.put<float>(5.0f);
+        t.put<int32_t>(2);
+        t.put<uint8_t>(0);
+        t.put<int64_t>(-1);
+        t.put<int64_t>(-1);
+        t.put<float>(0), t.put<float>(0), t.put<float>(0), t.put<float>(0);
+        t.put_blob("asset", 64);
+        c.session.send_packet(t, false);
+        pump(*server, all, 500);
+    }
     Player d("Kerel");
     check(d.start(), "another player joins, in the same scene");
     all = {&c, &d};
     pump(*server, all, 2500);
     check(d.list_scene == "LakeRegion" && d.list.size() == 3, "they get the scene as the first game gave it: a list of 3");
     check(d.wanted.empty(), "and aren't asked for theirs");
+    check(d.lights == 1, "they hear the scene's House Lights switch as it was last set");
+    check(d.train_from == 0 && d.train_flags == 8 && d.train_velocity == 0.0f,
+          "and get the steam train where its driver left it, as the host's idle train, standing");
     d.send_hashes(net::Msg::ItemWant, {"stick-1", "stick-2", "native-3"});
     pump(*server, all, 500);
     check(d.puts.size() == 2 && (d.puts[0].flags & net::kItemAnswer), "what they lack comes from the records kept (2 of the 3)");

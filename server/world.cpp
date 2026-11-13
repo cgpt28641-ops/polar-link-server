@@ -25,6 +25,14 @@ constexpr uint8_t kTagClock = 201;     // a World message: the clock, weather an
 constexpr uint8_t kTagMode = 202;      // a GameMode message: the world's experience mode and seed
 constexpr uint8_t kTagFeatures = 203;  // a Features message: the world's feature switches
 constexpr uint8_t kTagHours = 204;     // f64: the world's hours (server/world.h hours_)
+constexpr uint8_t kTagTrack = 205;     // a TrackElements message: one scene's switches and turntables
+constexpr uint8_t kTagBox = 206;       // an IslandBox message: the boat's box
+constexpr uint8_t kTagTrain = 207;     // a Train message: a train as it was left (idle)
+constexpr uint8_t kTagTrainParts = 208;  // a TrainParts message: its parts' conditions
+constexpr uint8_t kTagLights = 209;    // a HouseLights message: a scene's switch
+constexpr uint8_t kTagDawn = 210;      // two f32: dawn and dusk hours
+constexpr uint8_t kTrainIdle = 8, kTrainOwner = 1, kTrainInside = 2;  // the mod's coop_train Flags
+constexpr uint8_t kPartsFull = 0x80;   // the mod's kFullConditions
 constexpr double kFollowMs = 6000;     // a game follows the kept clock this long before it may be the world source
 constexpr double kSourceAwayMs = 30000;  // the source may be out of the game (a door, a region loading) this long
 constexpr double kFlagsMs = 2000;      // Msg::Server to each player this often
@@ -135,6 +143,14 @@ bool World::load(const std::filesystem::path& file) {
         }
         const net::Packet p = world_keep::packet(r);
         net::Reader body = net::packet_body(p);
+        if (static_cast<uint8_t>(r.tag) >= kTagTrack && static_cast<uint8_t>(r.tag) <= kTagLights) {
+            load_kept(static_cast<uint8_t>(r.tag), p);
+            continue;
+        }
+        if (static_cast<uint8_t>(r.tag) == kTagDawn) {
+            if (r.msg.size() == 2 * sizeof(float)) memcpy(&dawn_h_, r.msg.data(), sizeof(float)), memcpy(&dusk_h_, r.msg.data() + sizeof(float), sizeof(float));
+            continue;
+        }
         if (static_cast<uint8_t>(r.tag) == kTagClock) {
             net::WorldMsg w;
             if (net::read_world(body, w) && w.valid) world_ = std::move(w), have_world_ = true;
@@ -317,6 +333,37 @@ bool World::save(const std::filesystem::path& file) {
         net::write_features(w, features_, -1.0f);
         add_own(kTagFeatures, w);
     }
+    auto add_body = [&](uint8_t tag, net::Msg type, const std::vector<uint8_t>& body) {
+        if (body.empty()) return;
+        net::Writer w(type, body.size() + 64);
+        w.put_raw(body.data(), body.size());
+        add_own(tag, w);
+    };
+    for (const auto& [scene, parts] : track_) {
+        if (parts.empty()) continue;
+        net::Writer w(net::Msg::TrackElements, 65536);
+        w.put<uint8_t>(0);
+        w.put_blob(scene, 64);
+        w.put<uint16_t>(static_cast<uint16_t>(parts.size()));
+        for (const auto& [guid, text] : parts) w.put_blob(guid, 128), w.put_blob(text, 4000);
+        add_own(kTagTrack, w);
+    }
+    add_body(kTagBox, net::Msg::IslandBox, box_);
+    for (const auto& [guid, t] : trains_) {
+        add_body(kTagTrain, net::Msg::Train, t.frame);
+        add_body(kTagTrainParts, net::Msg::TrainParts, t.parts);
+    }
+    for (const auto& [scene, on] : lights_) {
+        net::Writer w(net::Msg::HouseLights, 128);
+        w.put<uint8_t>(on ? 1 : 0);
+        w.put_blob(scene, 64);
+        add_own(kTagLights, w);
+    }
+    records += static_cast<char>(kTagDawn);
+    put_u32(records, 2 * sizeof(float));
+    records.append(reinterpret_cast<const char*>(&dawn_h_), sizeof(float));
+    records.append(reinterpret_cast<const char*>(&dusk_h_), sizeof(float));
+    ++count;
     records += static_cast<char>(kTagServerSeq);
     put_u32(records, sizeof(uint32_t));
     put_u32(records, seq_);
@@ -364,6 +411,7 @@ std::string World::clock_text() const {
 // runs it. Dawn and dusk: TLD's usual hours (no game tells the server its own).
 net::SleepClock World::sleep_clock(double now_ms) const {
     net::SleepClock k;
+    k.dawn_h = dawn_h_, k.dusk_h = dusk_h_;
     if (!have_world_) return k;
     double t = world_.normalized_time;
     const double age_s = (now_ms - world_ms_) / 1000.0;
@@ -423,7 +471,19 @@ bool World::on_packet(const net::Packet& p, double now_ms) {
     if (p.type == net::Msg::Sleep) {
         net::Reader body = net::packet_body(p);
         net::SleepMsg m;
-        if (net::read_sleep(body, m)) sleep_.on_msg(p.from, m, now_ms);
+        if (!net::read_sleep(body, m)) return true;
+        if (m.op == net::SleepOp::Clock) {  // a game's dawn and dusk: the world source's count (anyone's while none is)
+            const float dusk = static_cast<float>(m.id) / 1000.0f;
+            if ((static_cast<int>(p.from) == source_ || source_ < 0) && m.hours >= 0 && m.hours < 24 && dusk >= 0 && dusk < 24 &&
+                (std::fabs(m.hours - dawn_h_) > 0.01f || std::fabs(dusk - dusk_h_) > 0.01f)) {
+                dawn_h_ = m.hours, dusk_h_ = dusk;
+                dirty_ = true;
+                logf("sleep: dawn %02d:%02d and dusk %02d:%02d from player %u's game", static_cast<int>(dawn_h_),
+                     static_cast<int>(dawn_h_ * 60) % 60, static_cast<int>(dusk_h_), static_cast<int>(dusk_h_ * 60) % 60, p.from);
+            }
+            return true;
+        }
+        sleep_.on_msg(p.from, m, now_ms);
         return true;
     }
     if (wildlife_.on_packet(p, now_ms)) {
@@ -439,6 +499,8 @@ bool World::on_packet(const net::Packet& p, double now_ms) {
         w.put_raw(body, size);
         session_.send_packet_except(p.from, w, p.type == net::Msg::Train ? p.reliable : true);
         net::Reader r = net::packet_body(p);
+        if (p.type == net::Msg::Train || p.type == net::Msg::TrainParts) keep_train(p);
+        if (p.type == net::Msg::TrackElements || p.type == net::Msg::IslandBox) dirty_ = true;
         if (p.type == net::Msg::TrackElements) {
             r.get<uint8_t>();
             const std::string scene = r.get_blob(64);
@@ -548,6 +610,8 @@ bool World::on_packet(const net::Packet& p, double now_ms) {
             const uint8_t on = r.get<uint8_t>();
             const std::string scene = r.get_blob(64);
             if (!r.ok() || scene.empty()) return true;
+            lights_[scene] = on != 0;
+            dirty_ = true;
             net::Writer w(net::Msg::HouseLights, 128);
             w.put<uint8_t>(on ? 1 : 0);
             w.put_blob(scene, 64);
@@ -776,6 +840,79 @@ void World::container_lock(const net::Packet& p, const net::ContainerLockMsg& m,
     }
 }
 
+// A Train or TrainParts message of a player's: kept per train as what a host's game would tell someone who comes: the
+// frame as "the host's idle train" (standing where its last driver or rider had it), the parts as "the host's
+// conditions" (conditions only: the firebox and tanks go by what people do).
+void World::keep_train(const net::Packet& p) {
+    if (p.data.size() <= net::kHeaderSize + 2) return;
+    std::vector<uint8_t> body(p.data.begin() + net::kHeaderSize, p.data.end());
+    net::Reader r = net::packet_body(p);
+    r.get<uint8_t>();
+    const uint8_t flags = r.get<uint8_t>();
+    const std::string scene = r.get_blob(64), guid = r.get_blob(64);
+    if (!r.ok() || scene.empty() || guid.empty()) return;
+    if (p.type == net::Msg::Train) {
+        if (!(flags & (kTrainOwner | kTrainInside | kTrainIdle))) return;  // (only the horn, or letting go)
+        const std::string spline = r.get_blob(64);
+        if (!r.ok()) return;
+        const size_t velocity = 2 + (2 + scene.size()) + (2 + guid.size()) + (2 + spline.size()) + sizeof(float) + 2;
+        if (velocity + sizeof(float) > body.size()) return;
+        body[0] = 0;
+        body[1] = kTrainIdle;
+        const float still = 0;
+        memcpy(body.data() + velocity, &still, sizeof(still));
+        Train& t = trains_[guid];
+        if (t.scene != scene && !t.scene.empty()) logf("iron road: the train is in %s now (was in %s)", scene.c_str(), t.scene.c_str());
+        t.scene = scene;
+        t.frame = std::move(body);
+    } else {
+        const size_t tanks = 2 + (2 + scene.size()) + (2 + guid.size());
+        if (tanks + 2 * sizeof(int64_t) + 1 + sizeof(int32_t) > body.size()) return;
+        body[0] = 0;
+        body[1] = kPartsFull;
+        const int64_t none = -1;
+        memcpy(body.data() + tanks, &none, sizeof(none));
+        memcpy(body.data() + tanks + sizeof(none), &none, sizeof(none));
+        const int32_t no_lock = -1;
+        memcpy(body.data() + body.size() - sizeof(no_lock), &no_lock, sizeof(no_lock));
+        Train& t = trains_[guid];
+        if (t.scene.empty()) t.scene = scene;
+        t.parts = std::move(body);
+    }
+    dirty_ = true;
+}
+
+// One of our own records of the file (kTagTrack .. kTagLights): a message as we would send it.
+void World::load_kept(uint8_t tag, const net::Packet& p) {
+    if (p.data.size() <= net::kHeaderSize) return;
+    const std::vector<uint8_t> body(p.data.begin() + net::kHeaderSize, p.data.end());
+    net::Reader r = net::packet_body(p);
+    if (tag == kTagBox) {
+        box_ = body;
+    } else if (tag == kTagTrack) {
+        r.get<uint8_t>();
+        const std::string scene = r.get_blob(64);
+        const uint16_t n = r.get<uint16_t>();
+        for (uint16_t i = 0; i < n && r.ok(); ++i) {
+            const std::string guid = r.get_blob(128), text = r.get_blob(4000);
+            if (r.ok() && !scene.empty()) track_[scene][guid] = text;
+        }
+    } else if (tag == kTagTrain || tag == kTagTrainParts) {
+        r.get<uint8_t>();
+        r.get<uint8_t>();
+        const std::string scene = r.get_blob(64), guid = r.get_blob(64);
+        if (!r.ok() || guid.empty()) return;
+        Train& t = trains_[guid];
+        if (tag == kTagTrain) t.scene = scene, t.frame = body;
+        else t.parts = body;
+        if (t.scene.empty()) t.scene = scene;
+    } else if (tag == kTagLights) {
+        const uint8_t on = r.get<uint8_t>();
+        const std::string scene = r.get_blob(64);
+        if (r.ok() && !scene.empty()) lights_[scene] = on != 0;
+    }
+}
+
 // --- arrivals --------------------------------------------------------------------------------------------------------
 
 void World::send_scene(uint8_t to, const std::string& scene) {
@@ -786,6 +923,25 @@ void World::send_scene(uint8_t to, const std::string& scene) {
         w.put<uint16_t>(static_cast<uint16_t>(tr->second.size()));
         for (const auto& [guid, data] : tr->second) w.put_blob(guid, 128), w.put_blob(data, 4000);
         if (w.ok()) session_.send_packet_to(to, w, true);
+    }
+    for (const auto& [guid, t] : trains_) {  // the steam train there, as it was left, and its parts' conditions
+        if (t.scene != scene) continue;
+        if (!t.frame.empty()) {
+            net::Writer w(net::Msg::Train, t.frame.size() + 64);
+            w.put_raw(t.frame.data(), t.frame.size());
+            session_.send_packet_to(to, w, true);
+        }
+        if (!t.parts.empty()) {
+            net::Writer w(net::Msg::TrainParts, t.parts.size() + 64);
+            w.put_raw(t.parts.data(), t.parts.size());
+            session_.send_packet_to(to, w, true);
+        }
+    }
+    if (const auto li = lights_.find(scene); li != lights_.end()) {
+        net::Writer w(net::Msg::HouseLights, 128);
+        w.put<uint8_t>(li->second ? 1 : 0);
+        w.put_blob(scene, 64);
+        session_.send_packet_to(to, w, true);
     }
     const auto sc = scenes_.find(scene);
     if (sc == scenes_.end()) {

@@ -145,9 +145,20 @@ private:
     std::array<Friend, net::kMaxPlayers> friends_{};
     std::unordered_map<std::string, Ask> asks_;
     // Iron Road: the track's switches and turntables per scene (guid -> TLD's own state text) and the boat's box, as
-    // the players' games last said (a host's game would hold them); not in the file yet.
+    // the players' games last said (a host's game would hold them); in the file too.
     std::unordered_map<std::string, std::map<std::string, std::string>> track_;
-    std::vector<uint8_t> box_;  // the newest IslandBox message's body  // scene -> who is giving its list
+    std::vector<uint8_t> box_;  // the newest IslandBox message's body
+    // The steam train as its last driver or rider left it (a Train body made "the host's idle train") and its parts'
+    // conditions (a TrainParts body made "the host's conditions"), per train: told to who arrives in its scene.
+    struct Train {
+        std::string scene;
+        std::vector<uint8_t> frame, parts;
+    };
+    std::map<std::string, Train> trains_;  // by the train's guid
+    std::map<std::string, bool> lights_;   // House Lights' switch per scene, as last said
+    float dawn_h_ = 7, dusk_h_ = 19;       // the world source's game's (SleepOp::Clock); TLD's usual until one says
+    void keep_train(const net::Packet& p);
+    void load_kept(uint8_t tag, const net::Packet& p);  // scene -> who is giving its list
     Wildlife wildlife_;
     Sleep sleep_;
     double world_ms_ = 0;  // when the newest World came (the clock between two of them: sleep_clock)
