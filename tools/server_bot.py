@@ -10,8 +10,9 @@ Put this file beside tldserver.exe and start it instead of the exe (start_server
 Creating the webhook: Discord -> the channel's settings (gear) -> Integrations -> Webhooks -> New Webhook -> Copy
 Webhook URL, then paste it into discord_webhook.txt. Keep that URL to yourselves: anyone with it can post there.
 
-It also starts the chat bot (discord_chat.py: answers on #chat with a local language model) when
-discord_bot_token.txt is beside it, and starts it again if it ends.
+It also starts, when discord_bot_token.txt is beside it, the chat bot (discord_chat.py: answers on #chat with a local
+language model) and the Discord bridge (tldcoop-discord\\local\\run_bridge.py, when that repository is cloned beside
+it), and starts them again if they end.
 
 Standard library only (Python 3.8+). Nothing here prints the webhook's URL or the bot's token.
 """
@@ -32,6 +33,10 @@ LOG = os.path.join(HERE, 'server_bot.log')
 CHAT_BOT = os.path.join(HERE, 'discord_chat.py')
 CHAT_TOKEN = os.path.join(HERE, 'discord_bot_token.txt')
 CHAT_LOG = os.path.join(HERE, 'discord_chat.log')
+# The Discord bridge (the repository tldcoop-discord cloned beside us): its loop reads the channels and posts for the
+# Claude chats, here instead of on GitHub Actions.
+BRIDGE = os.path.join(HERE, 'tldcoop-discord', 'local', 'run_bridge.py')
+BRIDGE_LOG = os.path.join(HERE, 'discord_bridge.log')
 
 EDIT_EVERY_S = 60       # the status message at least this often (and at once when the players change)
 QUICK_FAIL_S = 30       # a server that ends sooner than this after its start didn't really run
@@ -137,18 +142,22 @@ class Discord:
 
 
 class ChatBot:
-    """discord_chat.py beside us, as a child with its own log; started again when it ends (not when it can't start:
-    exit 2 = no token / refused, 3 = no discord.py; nor after 3 quick ends in a row)."""
+    """A Python helper beside us (discord_chat.py; the Discord bridge's local/run_bridge.py), as a child with its own
+    log; started again when it ends (not when it can't start: exit 2 = no token / refused, 3 = no discord.py; nor
+    after 3 quick ends in a row)."""
 
-    def __init__(self):
+    def __init__(self, name='chat bot', script=None, out_log=None):
+        self.name = name
+        self.script = script or CHAT_BOT
+        self.out_log = out_log or CHAT_LOG
         self.proc = None
         self.started = 0
         self.quick = 0
         self.next_try = 0
         self.given_up = False
-        self.enabled = os.path.isfile(CHAT_BOT) and os.path.isfile(CHAT_TOKEN)
-        if os.path.isfile(CHAT_BOT) and not os.path.isfile(CHAT_TOKEN):
-            log('chat bot: no discord_bot_token.txt: not started')
+        self.enabled = os.path.isfile(self.script) and os.path.isfile(CHAT_TOKEN)
+        if os.path.isfile(self.script) and not os.path.isfile(CHAT_TOKEN):
+            log('%s: no discord_bot_token.txt: not started' % self.name)
 
     def tick(self):
         if not self.enabled or self.given_up:
@@ -160,25 +169,25 @@ class ChatBot:
             ran = time.time() - self.started
             self.proc = None
             if code in (2, 3):
-                log('chat bot: ended (exit %d): see discord_chat.log; not started again' % code)
+                log('%s: ended (exit %d): see its log; not started again' % (self.name, code))
                 self.given_up = True
                 return
             self.quick = self.quick + 1 if ran < QUICK_FAIL_S else 0
             if self.quick >= MAX_QUICK_FAILS:
-                log('chat bot: ended %d times right after starting: given up; see discord_chat.log' % self.quick)
+                log('%s: ended %d times right after starting: given up; see its log' % (self.name, self.quick))
                 self.given_up = True
                 return
-            log('chat bot: ended (exit %s, after %d s): starting it again' % (code, ran))
+            log('%s: ended (exit %s, after %d s): starting it again' % (self.name, code, ran))
             self.next_try = time.time() + RESTART_WAIT_S
         if time.time() < self.next_try:
             return
         try:
-            out = open(CHAT_LOG, 'a', encoding='utf-8')
-            self.proc = subprocess.Popen([sys.executable, CHAT_BOT], cwd=HERE, stdout=out, stderr=subprocess.STDOUT)
+            out = open(self.out_log, 'a', encoding='utf-8')
+            self.proc = subprocess.Popen([sys.executable, self.script], cwd=os.path.dirname(self.script), stdout=out, stderr=subprocess.STDOUT)
             self.started = time.time()
-            log('chat bot: started (discord_chat.py; its log: discord_chat.log)')
+            log('%s: started (%s)' % (self.name, os.path.basename(self.script)))
         except OSError as e:
-            log('chat bot: cannot start (%s)' % e)
+            log('%s: cannot start (%s)' % (self.name, e))
             self.given_up = True
 
     def stop(self):
@@ -189,6 +198,19 @@ class ChatBot:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         self.proc = None
+
+
+class Helpers:
+    def __init__(self, helpers):
+        self.helpers = helpers
+
+    def tick(self):
+        for h in self.helpers:
+            h.tick()
+
+    def stop(self):
+        for h in self.helpers:
+            h.stop()
 
 
 def stopped_on_purpose(since):
@@ -255,7 +277,7 @@ def main():
         input('Enter zamyka okno...')
         return 1
     discord = Discord()
-    chat = ChatBot()
+    chat = Helpers([ChatBot(), ChatBot('discord bridge', BRIDGE, BRIDGE_LOG)])
     try:
         return run(discord, chat)
     finally:

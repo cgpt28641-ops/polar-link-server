@@ -59,6 +59,13 @@ Tokena nie udostępniaj nikomu: kto go ma, steruje botem. Opcjonalny plik `disco
 `{"channels": ["chat"], "model": "...", "extra": "Szymon zawsze ginie pierwszy."}` (`extra`: dodatkowe teksty o
 ekipie dla bota).
 
+## Cały bot Discorda na tym komputerze (most + czat)
+
+`setup_discord.bat` (w tym samym wydaniu) instaluje jednorazowo Git, biblioteki Pythona, Ollamę z modelem i klonuje
+repozytorium mostu `tldcoop-discord` obok serwera. Potem wklej token bota do `discord_bot_token.txt` i uruchom
+`start_server.bat`: `server_bot.py` sam startuje bota czatu (`discord_chat.py`) i most
+(`tldcoop-discord\local\run_bridge.py`), i podnosi je, gdy padną. Logi: `discord_chat.log`, `discord_bridge.log`.
+
 ## Świat
 
 Serwer trzyma świat w pliku `world.bin` obok exe (albo w pliku z `--world`). Zapisuje go co 30 s, jeśli coś się
