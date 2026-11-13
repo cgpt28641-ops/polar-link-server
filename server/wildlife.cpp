@@ -8,6 +8,9 @@
 // server without a game allows; where they differ it says so.
 
 namespace srv {
+
+constexpr float kTwinMetres = 150;  // a new animal this near a frozen one of its kind is that one (ingest)
+
 namespace {
 
 constexpr double kArbiterMs = 250;
@@ -299,6 +302,28 @@ std::vector<net::AnimalRec> Wildlife::ingest(uint8_t owner, const std::string& s
             e.epoch = rec.epoch;
             it = registry_.emplace(rec.id, std::move(e)).first;
             logf("wildlife: #%u (kind %u) shared by %s, its owner", rec.id, rec.kind, who(owner).c_str());
+            // Shatsca 13.11: back in a scene, TLD brought its own saved animals up again where the game came near them
+            // and they were shared as new, while the same animals stood frozen here from the last visit: 9 became 18.
+            // The frozen one nearest a new one of its kind (same spawn region when both say) is that same animal: it
+            // goes, the game's own stays.
+            if (!(rec.flags & net::kAnimalDead)) {
+                uint32_t twin = 0;
+                float best = kTwinMetres * kTwinMetres;
+                for (const auto& [id, f] : registry_) {
+                    if (id == rec.id || f.scene != scene || f.owner != net::kNoPlayer || f.pending_to != net::kNoPlayer) continue;
+                    if (f.last.kind != rec.kind || (f.last.flags & net::kAnimalDead) || f.last.hp <= 0) continue;
+                    if (f.last.region && rec.region && f.last.region != rec.region) continue;
+                    const float dx = f.last.x - rec.x, dy = f.last.y - rec.y, dz = f.last.z - rec.z;
+                    const float d = dx * dx + dy * dy + dz * dz;
+                    if (d < best) best = d, twin = id;
+                }
+                if (twin) {
+                    logf("wildlife: #%u kept frozen %.0f m from the new #%u is that same animal from the last visit: forgotten",
+                         twin, std::sqrt(best), rec.id);
+                    registry_.erase(twin);
+                    it = registry_.find(rec.id);
+                }
+            }
         }
         Entry& e = it->second;
         if (e.owner != owner) {

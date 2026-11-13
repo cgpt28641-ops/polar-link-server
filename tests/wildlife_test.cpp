@@ -278,6 +278,28 @@ int main() {
               "the next game to spawn there gets them, their times brought up to now");
     }
 
+    // --- a game back in a scene shares its own saved animal anew where a frozen one stands: one animal, not two
+    {
+        Wildlife t(catcher(), [](const std::string& l) { std::printf("  [server] %s\n", l.c_str()); });
+        double n = 1000;
+        auto go = [&](const std::vector<Wildlife::Present>& pl, double ms) {
+            for (double end = n + ms; n < end; n += 50) t.tick(pl, n, 1.0);
+        };
+        go({at(1, "Dale", 0, 0)}, 400);
+        t.on_packet(frame(1, "Dale", {animal(500, 30, 30), animal(501, 900, 900)}), n);
+        go({at(1, "Dale", 0, 0)}, 200);
+        go({at(1, "Hut", 0, 0)}, 600);  // away: both frozen
+        check(t.animals() == 2 && t.owner(500) == net::kNoPlayer, "left behind: two frozen animals");
+        go({at(1, "Dale", 5000, 5000)}, 300);  // back, far from both
+        t.on_packet(frame(1, "Dale", {animal(0x02000001, 32, 31)}), n);  // TLD's own copy of #500, shared as new
+        check(t.animals() == 2 && t.owner(0x02000001) == 1 && t.owner(501) == net::kNoPlayer,
+              "its own copy shared as new: the frozen twin beside it is forgotten, the far one stays");
+        net::AnimalRec other = animal(0x02000002, 902, 900);
+        other.kind = 4;
+        t.on_packet(frame(1, "Dale", {other}), n);
+        check(t.animals() == 3, "another kind beside a frozen one is no twin");
+    }
+
     // --- the file: the registry and the regions come back, frozen
     {
         std::vector<std::pair<bool, std::vector<uint8_t>>> file;
