@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 
 namespace srv {
@@ -28,6 +31,8 @@ bool Server::start(const Options& options) {
     if (!session_.start(cfg)) return false;
     started_ = true;
     world_.on_started();
+    started_ms_ = net::now_ms();
+    write_status(true);
     // Never a valid state: the players' games keep the server's "avatar" hidden. Always "in game" (START pressed),
     // so a player in the lobby goes straight in.
     net::StateMsg nobody;
@@ -48,6 +53,7 @@ void Server::update() {
     const double now = net::now_ms();
     world_.tick(now);
     report_changes();
+    if (now - last_status_ms_ >= 5000) write_status(true);
     if (world_.dirty() && now - last_save_ms_ >= opt_.save_every_s * 1000) save();
 }
 
@@ -67,6 +73,7 @@ void Server::stop() {
     if (!started_) return;
     started_ = false;
     if (world_.dirty()) save();
+    write_status(false);
     session_.stop();
     log_("server stopped");
 }
@@ -107,6 +114,49 @@ void Server::report_changes() {
         if (std::find(now.begin(), now.end(), p) == now.end())
             log_("left: " + p.second + " (id " + std::to_string(p.first) + ")");
     known_ = std::move(now);
+}
+
+namespace {
+std::string json_text(const std::string& s) {
+    std::string out = "\"";
+    for (unsigned char c : s) {
+        if (c == '"' || c == '\\') out += '\\', out += static_cast<char>(c);
+        else if (c < 0x20) out += ' ';
+        else out += static_cast<char>(c);
+    }
+    return out + "\"";
+}
+}  // namespace
+
+// status.json beside the world (whole, then swapped in): what tools/server_bot.py shows on Discord.
+void Server::write_status(bool online) {
+    last_status_ms_ = net::now_ms();
+    if (opt_.status_file.empty()) return;
+    std::string j = "{\"online\": " + std::string(online ? "true" : "false");
+    j += ", \"time\": " + std::to_string(static_cast<long long>(std::time(nullptr)));
+    j += ", \"up_s\": " + std::to_string(static_cast<long long>((net::now_ms() - started_ms_) / 1000));
+    j += ", \"name\": " + json_text(opt_.name) + ", \"port\": " + std::to_string(opt_.port);
+    j += ", \"game_version\": " + json_text(opt_.game_version) + ", \"max\": " + std::to_string(net::kMaxPlayers - 1);
+    j += ", \"clock\": " + json_text(world_.clock_text());
+    j += ", \"players\": [";
+    bool first = true;
+    if (online)
+        for (const PlayerLine& p : players()) {
+            j += std::string(first ? "" : ", ") + "{\"id\": " + std::to_string(p.id) + ", \"name\": " + json_text(p.name) +
+                 ", \"scene\": " + json_text(p.scene) + "}";
+            first = false;
+        }
+    j += "]}\n";
+    const std::filesystem::path file(opt_.status_file);
+    auto tmp = file;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << j;
+        if (!out) return;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, file, ec);
 }
 
 std::vector<PlayerLine> Server::players() const {

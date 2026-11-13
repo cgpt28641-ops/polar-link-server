@@ -344,6 +344,15 @@ bool World::save(const std::filesystem::path& file) {
     return true;
 }
 
+std::string World::clock_text() const {
+    if (!have_world_) return {};
+    char clock[64];
+    const int minutes = static_cast<int>((world_.normalized_time - std::floor(world_.normalized_time)) * 1440.0f + 0.5f) % 1440;
+    snprintf(clock, sizeof(clock), "%02d:%02d", minutes / 60, minutes % 60);
+    std::string weather = world_.weather_set;
+    return std::string(clock) + (weather.empty() ? "" : ", " + weather);
+}
+
 World::Counts World::counts() const {
     Counts c;
     c.scenes = scenes_.size();
@@ -363,11 +372,8 @@ World::Counts World::counts() const {
 std::string World::describe() const {
     const Counts c = counts();
     char line[640];
-    char clock[64] = "none yet";
-    if (have_world_) {
-        const int minutes = static_cast<int>((world_.normalized_time - std::floor(world_.normalized_time)) * 1440.0f + 0.5f) % 1440;
-        snprintf(clock, sizeof(clock), "day %d %02d:%02d", world_.day, minutes / 60, minutes % 60);
-    }
+    const std::string clock_now = clock_text();
+    const char* clock = clock_now.empty() ? "none yet" : clock_now.c_str();
     snprintf(line, sizeof(line),
              "%zu scene(s) (%zu with a whole item list), %zu item(s), %zu taken, %zu container(s), %zu object(s), "
              "%zu fire(s), %zu water source(s), %zu animal(s), spawn regions of %zu scene(s), %zu other record(s); clock %s, "

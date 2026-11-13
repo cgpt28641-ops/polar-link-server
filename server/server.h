@@ -23,6 +23,7 @@ struct Options {
     std::string game_version;      // must match the players' TLD exactly (tld_Data/StreamingAssets/version.txt)
     std::string world_file;        // the world's file ("" = nothing is read or written: tests)
     double save_every_s = 30;      // a changed world is written this often (and on stop)
+    std::string status_file;       // written every few seconds for the Discord status (tools/server_bot.py); "" none
 };
 
 struct PlayerLine {
@@ -60,6 +61,7 @@ public:
 private:
     void on_packets();
     void report_changes();
+    void write_status(bool online);
 
     LogFn log_;
     Options opt_;
@@ -68,6 +70,8 @@ private:
     double last_save_ms_ = 0;
     bool started_ = false;
     uint64_t chat_passed_ = 0;
+    double last_status_ms_ = -1e18;
+    double started_ms_ = 0;
     std::vector<net::Packet> in_;
     std::vector<std::pair<uint8_t, std::string>> known_;  // who was in, last round (for joined / left lines)
 };

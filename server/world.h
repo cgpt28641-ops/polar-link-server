@@ -69,6 +69,7 @@ public:
     };
     Counts counts() const;
     std::string describe() const;  // one line, for the console's "world"
+    std::string clock_text() const;  // "day 12 14:05", or "" before any game gave a clock
 
 private:
     struct Scene {

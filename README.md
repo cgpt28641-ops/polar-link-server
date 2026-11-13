@@ -24,6 +24,19 @@ https://github.com/cgpt28641-ops/polar-link-server/releases/download/server-late
 W grze: w `coop.ini` w sekcji `[net]` ustaw `transport=local`, `host_ip=<IP serwera>` i `port=27015`, a potem dołącz
 z menu CO-OP (tak jak do hosta po IP).
 
+## Restart po awarii i status na Discordzie
+
+Obok `tldserver.exe` połóż `server_bot.py` i `start_server.bat` (oba są w tym samym wydaniu) i uruchamiaj serwer
+przez `start_server.bat`. Potrzebny jest Python 3 (`winget install Python.Python.3.12`). Bez Pythona bat uruchomi
+sam serwer.
+
+- Gdy serwer padnie, bot uruchomi go ponownie. Po `stop` serwer zostaje wyłączony.
+- Status na Discordzie: na kanale wybierz Ustawienia kanału → Integracje → Webhooki → Nowy webhook → Kopiuj URL
+  webhooka i wklej ten adres do pliku `discord_webhook.txt` obok serwera. Bot trzyma tam jedną wiadomość ze stanem
+  (kto jest i gdzie, godzina w świecie) i pisze krótką linię, gdy ktoś wchodzi albo wychodzi. Adresu webhooka nie
+  udostępniaj nikomu: każdy, kto go ma, może pisać na tym kanale.
+- Żeby serwer startował razem z Windowsem: Win+R → `shell:startup` → wrzuć tam skrót do `start_server.bat`.
+
 ## Świat
 
 Serwer trzyma świat w pliku `world.bin` obok exe (albo w pliku z `--world`). Zapisuje go co 30 s, jeśli coś się

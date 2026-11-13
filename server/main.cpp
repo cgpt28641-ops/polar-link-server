@@ -138,6 +138,7 @@ int main(int argc, char** argv) {
     }
 
     if (opt.world_file.empty()) opt.world_file = (exe_dir / "world.bin").string();
+    opt.status_file = (exe_dir / "status.json").string();
 
 #ifdef _WIN32
     SetConsoleCtrlHandler(on_console, TRUE);
