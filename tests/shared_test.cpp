@@ -33,7 +33,11 @@ struct Player {
     explicit Player(const char* n) : name(n), session([](const std::string&) {}) {}
     std::string name;
     net::Session session;
-    int flags = -1;            // the server's last Msg::Server (-1: none yet)
+    int flags = -1;            // the server's last Msg::Server (-1: none yet), without kServerWantsScene
+    std::string wanted;        // ...and the scene it wants our whole list of
+    std::string list_scene;    // the last ItemList
+    std::vector<uint64_t> list;
+    std::vector<net::ItemPutMsg> puts;
     std::string mode;          // the last GameMode
     int32_t seed = 0;
     int features = -1;         // the last Features' bits
@@ -82,6 +86,27 @@ struct Player {
         net::write_features(w, bits, sn);
         session.send_packet(w, true);
     }
+    void send_item(const std::string& pdid, uint8_t item_flags) {
+        net::ItemPutMsg m;
+        m.scene = "LakeRegion";
+        m.seq = ++seq;
+        m.flags = item_flags;
+        m.pdid = pdid;
+        m.prefab = "GEAR_Stick";
+        m.gear = "{}";
+        net::Writer w(net::Msg::ItemPut, net::kMaxMessage);
+        net::write_item_put(w, m);
+        session.send_packet(w, true);
+    }
+    void send_hashes(net::Msg type, const std::vector<std::string>& pdids) {
+        net::ItemHashesMsg m;
+        m.scene = "LakeRegion";
+        for (const std::string& id : pdids) m.hashes.push_back(net::pdid_hash(id));
+        net::Writer w(type, net::kMaxMessage);
+        net::write_item_hashes(w, m);
+        session.send_packet(w, true);
+    }
+    uint32_t seq = 0;
     void take() {
         std::vector<net::Packet> in;
         session.drain_packets(in);
@@ -89,7 +114,13 @@ struct Player {
             net::Reader r = net::packet_body(p);
             if (p.type == net::Msg::Server) {
                 uint8_t f = 0;
-                if (net::read_server(r, f)) flags = f;
+                if (net::read_server(r, f, &wanted)) flags = f & ~net::kServerWantsScene;
+            } else if (p.type == net::Msg::ItemList) {
+                net::ItemHashesMsg m;
+                if (net::read_item_hashes(r, m)) list_scene = m.scene, list = m.hashes;
+            } else if (p.type == net::Msg::ItemPut) {
+                net::ItemPutMsg m;
+                if (net::read_item_put(r, m)) puts.push_back(m);
             } else if (p.type == net::Msg::GameMode) {
                 net::read_game_mode(r, mode, seed);
             } else if (p.type == net::Msg::Features) {
@@ -225,6 +256,24 @@ int main() {
     pump(*server, all, 500);
     check(c.flags == (kServerIs | kServerWorldSource | kServerWantsMode), "the server asks for a mode again");
     check(server->command("forget nonsense", &quit).rfind("forget ", 0) == 0, "console: forget what?");
+
+    // A scene nobody's game showed the server yet: the first game there is asked for its whole list.
+    check(c.wanted == "LakeRegion", "the server asks the first game in a scene it has no list of for its own");
+    c.send_item("stick-1", net::kItemAnswer);
+    c.send_item("stick-2", net::kItemAnswer);
+    c.send_hashes(net::Msg::ItemList, {"stick-1", "stick-2", "native-3"});
+    pump(*server, all, 2500);
+    check(c.wanted.empty(), "given: the server stops asking");
+    Player d("Kerel");
+    check(d.start(), "another player joins, in the same scene");
+    all = {&c, &d};
+    pump(*server, all, 2500);
+    check(d.list_scene == "LakeRegion" && d.list.size() == 3, "they get the scene as the first game gave it: a list of 3");
+    check(d.wanted.empty(), "and aren't asked for theirs");
+    d.send_hashes(net::Msg::ItemWant, {"stick-1", "stick-2", "native-3"});
+    pump(*server, all, 500);
+    check(d.puts.size() == 2 && (d.puts[0].flags & net::kItemAnswer), "what they lack comes from the records kept (2 of the 3)");
+    d.session.stop();
 
     c.session.stop();
     server->stop();

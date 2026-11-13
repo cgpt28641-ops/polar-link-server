@@ -430,6 +430,30 @@ bool World::on_packet(const net::Packet& p, double now_ms) {
         dirty_ |= wildlife_.take_dirty();
         return true;
     }
+    if (p.type == net::Msg::Train || p.type == net::Msg::TrainParts || p.type == net::Msg::TrackElements ||
+        p.type == net::Msg::IslandBox) {  // Iron Road: as a host's game, on to the others as it came
+        if (p.data.size() <= net::kHeaderSize) return true;
+        const uint8_t* body = p.data.data() + net::kHeaderSize;
+        const size_t size = p.data.size() - net::kHeaderSize;
+        net::Writer w(p.type, size + 64);
+        w.put_raw(body, size);
+        session_.send_packet_except(p.from, w, p.type == net::Msg::Train ? p.reliable : true);
+        net::Reader r = net::packet_body(p);
+        if (p.type == net::Msg::TrackElements) {
+            r.get<uint8_t>();
+            const std::string scene = r.get_blob(64);
+            const uint16_t n = r.get<uint16_t>();
+            for (uint16_t i = 0; i < n && r.ok(); ++i) {
+                const std::string guid = r.get_blob(128), data = r.get_blob(4000);
+                if (r.ok() && !scene.empty()) track_[scene][guid] = data;
+            }
+        } else if (p.type == net::Msg::IslandBox) {
+            if (box_.empty()) logf("iron road: the boat's box is kept (from player %u's game)", p.from);
+            box_.assign(body, body + size);
+            for (Friend& f : friends_) f.told_box = true;  // (they all just heard, or said it)
+        }
+        return true;
+    }
     net::Reader r = net::packet_body(p);
     switch (p.type) {
         case net::Msg::ItemPut: {
@@ -445,6 +469,11 @@ bool World::on_packet(const net::Packet& p, double now_ms) {
         case net::Msg::ItemWant: {
             net::ItemHashesMsg m;
             if (net::read_item_hashes(r, m)) item_want(p, m);
+            return true;
+        }
+        case net::Msg::ItemList: {  // a game's whole list of a scene we asked it for
+            net::ItemHashesMsg m;
+            if (net::read_item_hashes(r, m)) item_list(p, m);
             return true;
         }
         case net::Msg::ContainerPut: {
@@ -545,7 +574,17 @@ bool World::on_packet(const net::Packet& p, double now_ms) {
 }
 
 void World::item_put(const net::Packet& p, net::ItemPutMsg m) {
-    if (m.flags & (net::kItemNotYours | net::kItemAnswer)) return;  // a host's words; not a player's to say
+    if (m.flags & net::kItemAnswer) {  // a record of the scene a game is giving us whole (ask_scenes): kept, not passed on
+        const auto ask = asks_.find(m.scene);
+        if (ask == asks_.end() || ask->second.player != p.from) return;
+        Scene& s = scenes_[m.scene];
+        m.flags = static_cast<uint8_t>(m.flags & ~net::kItemAnswer);
+        m.owner = net::kNoPotOwner;
+        const std::string pdid = m.pdid;
+        if (!s.gone.count(pdid) && s.items.emplace(pdid, std::move(m)).second) ++ask->second.records, dirty_ = true;
+        return;
+    }
+    if (m.flags & net::kItemNotYours) return;  // a host's word; not a player's to say
     if (!newest(p, "i/" + m.pdid, m.seq)) return;
     claims_.lies_again(m.scene, m.pdid);
     m.seq = ++seq_;
@@ -598,6 +637,62 @@ void World::item_gone(const net::Packet& p, net::ItemGoneMsg m, double now_ms) {
     else
         s.gone[m.pdid] = std::move(m);
     dirty_ = true;
+}
+
+// The game we asked (ask_scenes) gave its whole list of a scene: from now on that is the scene for everyone who comes.
+// What other players put there meanwhile stays on it; what they took isn't.
+void World::item_list(const net::Packet& p, const net::ItemHashesMsg& m) {
+    const auto ask = asks_.find(m.scene);
+    if (ask == asks_.end() || ask->second.player != p.from) return;
+    Scene& s = scenes_[m.scene];
+    if (!s.listed) {
+        s.list.clear();
+        s.list.insert(m.hashes.begin(), m.hashes.end());
+        for (const auto& [pdid, item] : s.items) s.list.insert(net::pdid_hash(pdid));
+        for (const auto& [pdid, gone] : s.gone) s.list.erase(net::pdid_hash(pdid));
+        s.gone.clear();
+        s.listed = true;
+        dirty_ = true;
+        logf("items: player %u's game gave %s whole: a list of %zu loose item(s), %zu record(s) new to us", p.from,
+             m.scene.c_str(), s.list.size(), ask->second.records);
+    }
+    asks_.erase(ask);
+}
+
+// A scene someone is in that has no whole list: the first game there (caught up, settled in it) is asked for its own.
+// An ask whose game left the scene or the server, or took too long, is dropped: the next game there is asked.
+void World::ask_scenes(const net::Status& st, double now_ms) {
+    constexpr double kAskMs = 180000;
+    for (auto it = asks_.begin(); it != asks_.end();) {
+        const Ask& a = it->second;
+        bool there = false;
+        for (const net::PlayerInfo& p : st.players) {
+            if (p.id != a.player || !p.linked || p.link != a.link) continue;
+            const auto state = session_.remote_state(p.id);
+            there = state && state->valid && state->scene == it->first;
+        }
+        if (there && now_ms - a.since_ms < kAskMs) {
+            ++it;
+            continue;
+        }
+        logf("items: player %u didn't give %s whole (%s): the next game there is asked", a.player, it->first.c_str(),
+             there ? "it took too long" : "they left it");
+        it = asks_.erase(it);
+    }
+    for (const net::PlayerInfo& p : st.players) {
+        if (p.id == 0 || p.id >= net::kMaxPlayers || !p.linked || !p.caught_up) continue;
+        const Arrival& a = arrivals_[p.id];
+        if (a.link != p.link || a.scene.empty() || !a.pending.empty()) continue;  // what is kept there went to them first
+        const auto state = session_.remote_state(p.id);
+        if (!state || !state->valid || state->scene != a.scene) continue;
+        const auto sc = scenes_.find(a.scene);
+        if (sc != scenes_.end() && sc->second.listed) continue;
+        bool asked = asks_.count(a.scene) != 0;
+        for (const auto& [scene, ask] : asks_) asked |= ask.player == p.id;  // one scene at a time per game
+        if (asked) continue;
+        asks_[a.scene] = Ask{p.id, p.link, now_ms, 0};
+        logf("items: no whole list of %s yet: asking player %u's game for its own", a.scene.c_str(), p.id);
+    }
 }
 
 void World::item_want(const net::Packet& p, const net::ItemHashesMsg& m) {
@@ -684,6 +779,14 @@ void World::container_lock(const net::Packet& p, const net::ContainerLockMsg& m,
 // --- arrivals --------------------------------------------------------------------------------------------------------
 
 void World::send_scene(uint8_t to, const std::string& scene) {
+    if (const auto tr = track_.find(scene); tr != track_.end() && !tr->second.empty()) {  // Iron Road's switches there
+        net::Writer w(net::Msg::TrackElements, 65536);
+        w.put<uint8_t>(0);
+        w.put_blob(scene, 64);
+        w.put<uint16_t>(static_cast<uint16_t>(tr->second.size()));
+        for (const auto& [guid, data] : tr->second) w.put_blob(guid, 128), w.put_blob(data, 4000);
+        if (w.ok()) session_.send_packet_to(to, w, true);
+    }
     const auto sc = scenes_.find(scene);
     if (sc == scenes_.end()) {
         logf("world: player %u is in %s; nothing kept there yet", to, scene.c_str());
@@ -844,6 +947,12 @@ void World::shared_tick(const net::Status& st, double now_ms) {
             net::write_game_mode(w, mode_, seed_);
             session_.send_packet_to(p.id, w, true);
         }
+        if (!box_.empty() && !f.told_box && in_now[p.id]) {  // the boat's box as it stands, once their game is in
+            f.told_box = true;
+            net::Writer w(net::Msg::IslandBox, box_.size() + 64);
+            w.put_raw(box_.data(), box_.size());
+            session_.send_packet_to(p.id, w, true);
+        }
         if (have_features_ && !f.told_features) {
             f.told_features = true;
             net::Writer w(net::Msg::Features, 64);
@@ -870,15 +979,20 @@ void World::shared_tick(const net::Status& st, double now_ms) {
     for (uint8_t id = 1; id < net::kMaxPlayers; ++id) {
         if (!linked[id]) continue;
         Friend& f = friends_[id];
-        const uint8_t flags = static_cast<uint8_t>(net::kServerIs | (source_ == id ? net::kServerWorldSource : 0) |
+        uint8_t flags = static_cast<uint8_t>(net::kServerIs | (source_ == id ? net::kServerWorldSource : 0) |
                                                    (have_mode_ ? 0 : net::kServerWantsMode) |
                                                    (have_features_ ? 0 : net::kServerWantsFeatures));
-        const bool changed = flags != f.flags;
+        std::string wanted;
+        for (const auto& [scene, ask] : asks_)
+            if (ask.player == id) wanted = scene;
+        if (!wanted.empty()) flags = static_cast<uint8_t>(flags | net::kServerWantsScene);
+        const bool changed = flags != f.flags || wanted != f.wanted;
         if (!changed && now_ms - f.flags_ms < kFlagsMs) continue;
         f.flags = flags;
+        f.wanted = wanted;
         f.flags_ms = now_ms;
         net::Writer w(net::Msg::Server);
-        net::write_server(w, flags);
+        net::write_server(w, flags, wanted);
         session_.send_packet_to(id, w, changed);
     }
 }
@@ -949,6 +1063,7 @@ void World::tick(double now_ms) {
         arrivals_[id] = Arrival{};
         for (const std::string& key : locks_.drop_player(id)) tell_lock(key);
     }
+    ask_scenes(st, now_ms);
     if (now_ms - last_lock_tick_ >= 500) {
         last_lock_tick_ = now_ms;
         for (const std::string& key : locks_.expire(now_ms, net::kLockStaleMs, kNobody)) tell_lock(key);

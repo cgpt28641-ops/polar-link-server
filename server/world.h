@@ -5,8 +5,10 @@
 // written to disk (the mod's world_keep file format: mod/src/world_keep.h, so a host's worlds/<save>.bin loads as is).
 //
 //   items       a scene's loose items: the newest ItemPut per item, and which are gone (ItemGone). A scene with a
-//               whole list (ItemList, from a host's file) is told as that list to a player who arrives (they drop
-//               what isn't on it and ask for what they lack: ItemWant); one without is told as the changes kept.
+//               whole list (ItemList, from a host's file or a player's game) is told as that list to a player who
+//               arrives (they drop what isn't on it and ask for what they lack: ItemWant); one without is told as the
+//               changes kept, and the first game there is asked for its whole list (Msg::Server kServerWantsScene):
+//               from then on the scene is the same for everyone, as with a host who has been there.
 //               Two takes of one item at about the same time: net::Claims decides (a later one is refused).
 //   containers  the newest contents per container (ContainerPut); a player opening one asks (ContainerWant) and gets
 //               them, or "nothing known: yours stands". One player at a time in a container (net::LockTable).
@@ -15,6 +17,8 @@
 //   animals     the mod's wildlife ownership with the host's part done here (server/wildlife.h): the registry, who
 //               runs which animal, who spawns where, deaths and spawn regions; kept in the file too.
 //   sleep       sleeping and passing time together: decided here from the players' States (server/sleep.h).
+//   Iron Road   the train's frames and parts go on to the others; the track's switches are kept per scene and told
+//               to who arrives; the boat's box is kept and told to who joins.
 //   passed on   blood, spray paint, house lights, handing an item over (Give): to the other players, nothing kept.
 //   clock, weather, mode, seed, feature switches: the server has no game to run them. One player's game at a time is
 //               the "world source" (the mod's coop_server.h): its World (clock, weather, wind) comes here, is kept and
@@ -103,6 +107,14 @@ private:
         uint8_t flags = 0xFF;       // the Msg::Server flags last sent
         double flags_ms = 0;
         bool told_mode = false, told_features = false;
+        bool told_box = false;
+        std::string wanted;         // the scene whose list this game was last asked for (Msg::Server)
+    };
+    struct Ask {  // a scene with no whole item list: the game asked to give its own (the first to come there)
+        uint8_t player = 0;
+        uint32_t link = 0;
+        double since_ms = 0;
+        size_t records = 0;
     };
     bool shared_packet(const net::Packet& p);
     void shared_tick(const net::Status& st, double now_ms);
@@ -110,6 +122,8 @@ private:
     void item_put(const net::Packet& p, net::ItemPutMsg m);
     void item_gone(const net::Packet& p, net::ItemGoneMsg m, double now_ms);
     void item_want(const net::Packet& p, const net::ItemHashesMsg& m);
+    void item_list(const net::Packet& p, const net::ItemHashesMsg& m);
+    void ask_scenes(const net::Status& st, double now_ms);
     void container_put(const net::Packet& p, net::ContainerPutMsg m);
     void container_want(const net::Packet& p, const net::ContainerWantMsg& m);
     void container_lock(const net::Packet& p, const net::ContainerLockMsg& m, double now_ms);
@@ -129,6 +143,11 @@ private:
     net::LockTable locks_;
     double last_lock_tick_ = 0;
     std::array<Friend, net::kMaxPlayers> friends_{};
+    std::unordered_map<std::string, Ask> asks_;
+    // Iron Road: the track's switches and turntables per scene (guid -> TLD's own state text) and the boat's box, as
+    // the players' games last said (a host's game would hold them); not in the file yet.
+    std::unordered_map<std::string, std::map<std::string, std::string>> track_;
+    std::vector<uint8_t> box_;  // the newest IslandBox message's body  // scene -> who is giving its list
     Wildlife wildlife_;
     Sleep sleep_;
     double world_ms_ = 0;  // when the newest World came (the clock between two of them: sleep_clock)
