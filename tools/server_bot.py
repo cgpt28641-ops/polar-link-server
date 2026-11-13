@@ -10,7 +10,10 @@ Put this file beside tldserver.exe and start it instead of the exe (start_server
 Creating the webhook: Discord -> the channel's settings (gear) -> Integrations -> Webhooks -> New Webhook -> Copy
 Webhook URL, then paste it into discord_webhook.txt. Keep that URL to yourselves: anyone with it can post there.
 
-Standard library only (Python 3.8+). Nothing here prints the webhook's URL.
+It also starts the chat bot (discord_chat.py: answers on #chat with a local language model) when
+discord_bot_token.txt is beside it, and starts it again if it ends.
+
+Standard library only (Python 3.8+). Nothing here prints the webhook's URL or the bot's token.
 """
 import json
 import os
@@ -26,6 +29,9 @@ STATUS = os.path.join(HERE, 'status.json')
 HOOK_FILE = os.path.join(HERE, 'discord_webhook.txt')
 STATE = os.path.join(HERE, 'bot_state.json')
 LOG = os.path.join(HERE, 'server_bot.log')
+CHAT_BOT = os.path.join(HERE, 'discord_chat.py')
+CHAT_TOKEN = os.path.join(HERE, 'discord_bot_token.txt')
+CHAT_LOG = os.path.join(HERE, 'discord_chat.log')
 
 EDIT_EVERY_S = 60       # the status message at least this often (and at once when the players change)
 QUICK_FAIL_S = 30       # a server that ends sooner than this after its start didn't really run
@@ -130,6 +136,68 @@ class Discord:
             save_json(STATE, self.state)
 
 
+class ChatBot:
+    """discord_chat.py beside us, as a child with its own log; started again when it ends (not when it can't start:
+    exit 2 = no token / refused, 3 = no discord.py; nor after 3 quick ends in a row)."""
+
+    def __init__(self):
+        self.proc = None
+        self.started = 0
+        self.quick = 0
+        self.next_try = 0
+        self.given_up = False
+        self.enabled = os.path.isfile(CHAT_BOT) and os.path.isfile(CHAT_TOKEN)
+        if os.path.isfile(CHAT_BOT) and not os.path.isfile(CHAT_TOKEN):
+            log('chat bot: no discord_bot_token.txt: not started')
+
+    def tick(self):
+        if not self.enabled or self.given_up:
+            return
+        if self.proc is not None:
+            code = self.proc.poll()
+            if code is None:
+                return
+            ran = time.time() - self.started
+            self.proc = None
+            if code in (2, 3):
+                log('chat bot: ended (exit %d): see discord_chat.log; not started again' % code)
+                self.given_up = True
+                return
+            self.quick = self.quick + 1 if ran < QUICK_FAIL_S else 0
+            if self.quick >= MAX_QUICK_FAILS:
+                log('chat bot: ended %d times right after starting: given up; see discord_chat.log' % self.quick)
+                self.given_up = True
+                return
+            log('chat bot: ended (exit %s, after %d s): starting it again' % (code, ran))
+            self.next_try = time.time() + RESTART_WAIT_S
+        if time.time() < self.next_try:
+            return
+        try:
+            out = open(CHAT_LOG, 'a', encoding='utf-8')
+            self.proc = subprocess.Popen([sys.executable, CHAT_BOT], cwd=HERE, stdout=out, stderr=subprocess.STDOUT)
+            self.started = time.time()
+            log('chat bot: started (discord_chat.py; its log: discord_chat.log)')
+        except OSError as e:
+            log('chat bot: cannot start (%s)' % e)
+            self.given_up = True
+
+    def stop(self):
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+
+
+def stopped_on_purpose(since):
+    """The server writes status.json with online false as it stops (stop, Ctrl+C, the window closed). Killed from
+    outside (an antivirus, the task manager) it can't, and its exit code may still read 0."""
+    st = load_json(STATUS, None)
+    return bool(st) and st.get('online') is False and float(st.get('time', 0)) >= since - 1
+
+
 def status_text(st, online):
     stamp = time.strftime('%d.%m %H:%M')
     if not online or not st.get('online'):
@@ -146,12 +214,13 @@ def status_text(st, online):
     return '\n'.join(lines)
 
 
-def watch(proc, discord):
+def watch(proc, discord, chat):
     """While the server runs: the status message and join / leave lines. Returns its exit code."""
     known = None
     last_edit = 0
     last_mtime = 0
     while True:
+        chat.tick()
         code = proc.poll()
         if code is not None:
             return code
@@ -186,6 +255,14 @@ def main():
         input('Enter zamyka okno...')
         return 1
     discord = Discord()
+    chat = ChatBot()
+    try:
+        return run(discord, chat)
+    finally:
+        chat.stop()
+
+
+def run(discord, chat):
     quick_fails = 0
     first = True
     while True:
@@ -196,11 +273,14 @@ def main():
             discord.post('🟢 Serwer wystartował')
         first = False
         try:
-            code = watch(proc, discord)
+            code = watch(proc, discord, chat)
         except KeyboardInterrupt:  # (Ctrl+C reaches the server too: it saves and stops)
             code = proc.wait()
         ran = time.time() - started
         discord.status(status_text({}, False))
+        if code == 0 and not stopped_on_purpose(started):
+            log('tldserver.exe vanished without stopping (killed from outside? an antivirus?): treated as a crash')
+            code = -1
         if code == 0:
             log('tldserver.exe stopped (exit 0): not started again')
             discord.post('🔴 Serwer wyłączony')

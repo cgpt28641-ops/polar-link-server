@@ -36,6 +36,28 @@ sam serwer.
   (kto jest i gdzie, godzina w świecie) i pisze krótką linię, gdy ktoś wchodzi albo wychodzi. Adresu webhooka nie
   udostępniaj nikomu: każdy, kto go ma, może pisać na tym kanale.
 - Żeby serwer startował razem z Windowsem: Win+R → `shell:startup` → wrzuć tam skrót do `start_server.bat`.
+- Gdy serwer zniknie bez `stop` (np. zabije go antywirus), bot uzna to za awarię i uruchomi go ponownie.
+
+## Bot czatu (#chat, lokalny model językowy)
+
+`discord_chat.py` (w tym samym wydaniu, obok `server_bot.py`) czyta kanał `#chat` i odpowiada, gdy ktoś go oznaczy
+(@bot) albo odpowie na jego wiadomość: wulgarnie, wprost, z polskimi memami i emotkami. Zna stan serwera (kto gra,
+godzina w grze). Odpowiedzi pisze model językowy działający na tym komputerze (Ollama), nic nie idzie do żadnej
+chmury poza samym Discordem. Uruchamia go `server_bot.py`, gdy obok leży `discord_bot_token.txt`.
+
+1. Ollama i polski model (Bielik, ok. 4,5 GB, mieści się w karcie z 6 GB):
+   `winget install Ollama.Ollama`, potem w nowym oknie cmd:
+   `ollama pull SpeakLeash/bielik-minitron-7B-v3.0-instruct:Q4_K_M`
+2. Biblioteka Discorda dla Pythona: `py -3 -m pip install discord.py`
+3. Bot Discorda (webhook nie umie czytać kanału): discord.com/developers/applications → New Application → zakładka
+   Bot → Reset Token → skopiuj token do pliku `discord_bot_token.txt` obok serwera. Na tej samej stronie włącz
+   **MESSAGE CONTENT INTENT**. Potem OAuth2 → URL Generator: zaznacz `bot`, uprawnienia View Channels, Send
+   Messages, Read Message History → otwórz wygenerowany link i dodaj bota do serwera Discord.
+4. Uruchom serwer ponownie przez `start_server.bat`. Log bota: `discord_chat.log`.
+
+Tokena nie udostępniaj nikomu: kto go ma, steruje botem. Opcjonalny plik `discord_chat.json` zmienia ustawienia, np.
+`{"channels": ["chat"], "model": "...", "extra": "Szymon zawsze ginie pierwszy."}` (`extra`: dodatkowe teksty o
+ekipie dla bota).
 
 ## Świat
 
