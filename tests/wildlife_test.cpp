@@ -313,6 +313,82 @@ int main() {
         check(again.owner(100) == net::kNoPlayer, "after a restart nobody runs anything until someone comes near");
     }
 
+    // --- carcasses (Shatsca 16.11): the game that runs a dead animal lists its carcass; the others in that scene get
+    // it; their harvests go to that game with the server's seqs, and its acks come back to each harvester as its own
+    {
+        Wildlife c(catcher(), [](const std::string&) {});
+        double t = 1e6;
+        c.tick({at(1, "Rail", 0, 0), at(2, "Rail", 3, 0), at(3, "Elsewhere", 0, 0)}, t, 10);
+        net::AnimalRec dead = animal(4000, 1, 1);
+        dead.flags |= net::kAnimalDead;
+        dead.hp = 0;
+        c.on_packet(frame(2, "Rail", {dead}), t);
+        check(c.owner(4000) == 2, "a wolf player 2's game runs, dead there");
+        auto carcass_list = [](uint8_t from, uint32_t ack) {
+            net::CarcassRec r;
+            r.animal = 4000;
+            r.prefab = "WILDLIFE_Wolf";
+            r.meat_units = 5000000000ll;
+            r.hide = 1;
+            r.gut = 2;
+            r.harvest_ack = ack;
+            net::Writer w(net::Msg::Carcasses);
+            net::write_carcasses(w, {r});
+            return packet(from, w);
+        };
+        auto lists_to = [](int to) {
+            std::vector<net::CarcassRec> out;
+            for (const Sent& s : g_sent) {
+                if (s.type != net::Msg::Carcasses || s.to != to) continue;
+                net::Packet p;
+                p.data = s.data;
+                net::Reader r = net::packet_body(p);
+                std::vector<net::CarcassRec> l;
+                if (net::read_carcasses(r, l)) out.insert(out.end(), l.begin(), l.end());
+            }
+            return out;
+        };
+        g_sent.clear();
+        c.on_packet(carcass_list(2, 0), t);
+        check(lists_to(1).size() == 1 && lists_to(1)[0].animal == 4000 && lists_to(1)[0].harvest_ack == 0,
+              "its carcass goes to the other player in the scene");
+        check(lists_to(3).empty() && lists_to(2).empty(), "not to its own game, nor to one in another scene");
+        g_sent.clear();
+        c.on_packet(carcass_list(1, 0), t);
+        check(lists_to(2).empty(), "a list from a game that doesn't run it goes nowhere");
+        g_sent.clear();
+        net::HarvestMsg h;
+        h.animal = 4000;
+        h.seq = 7;
+        h.meat_units = 1000000000ll;
+        net::Writer hw(net::Msg::Harvest);
+        net::write_harvest(hw, h);
+        c.on_packet(packet(1, hw), t);
+        uint32_t passed_seq = 0;
+        for (const Sent& s : g_sent) {
+            if (s.type != net::Msg::Harvest || s.to != 2) continue;
+            net::Packet p;
+            p.data = s.data;
+            net::Reader r = net::packet_body(p);
+            net::HarvestMsg got;
+            if (net::read_harvest(r, got) && got.animal == 4000 && got.meat_units == h.meat_units) passed_seq = got.seq;
+        }
+        check(passed_seq != 0, "player 1's harvest goes to player 2, who runs it, with the server's seq");
+        g_sent.clear();
+        c.on_packet(carcass_list(2, 0), t);
+        check(lists_to(1).size() == 1 && lists_to(1)[0].harvest_ack == 0, "not counted there yet: no ack for player 1");
+        g_sent.clear();
+        c.on_packet(carcass_list(2, passed_seq), t);
+        check(lists_to(1).size() == 1 && lists_to(1)[0].harvest_ack == 7, "counted there: player 1 sees its own seq 7 acked");
+        g_sent.clear();
+        net::Writer qw(net::Msg::Quartered);
+        qw.put(static_cast<uint32_t>(4000));
+        c.on_packet(packet(1, qw), t);
+        bool quartered = false;
+        for (const Sent& s : g_sent) quartered |= s.type == net::Msg::Quartered && s.to == 2;
+        check(quartered, "a quartering goes to the game that runs it");
+    }
+
     std::printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "passed", g_failures);
     return g_failures ? 1 : 0;
 }

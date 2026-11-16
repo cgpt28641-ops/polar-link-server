@@ -110,6 +110,8 @@ private:
     void refuse(uint32_t id, uint16_t epoch, uint8_t from, double now);
     std::vector<net::AnimalRec> ingest(uint8_t owner, const std::string& scene, const std::vector<net::AnimalRec>& recs, double now);
     void arbitrate(const std::vector<Present>& players, double now);
+    void pass_carcasses(uint8_t from, std::vector<net::CarcassRec> list, double now);
+    void pass_harvest(uint8_t from, net::HarvestMsg h, double now);
     void logf(const char* fmt, ...);
 
     Out out_;
@@ -124,6 +126,20 @@ private:
     std::array<std::pair<std::string, double>, net::kMaxPlayers> arrival_{};
     net::wild::RateLimit handovers_{4, 6};
     std::vector<Present> players_;  // as of the last tick
+    // Carcasses (Shatsca 16.11: a wolf Szymon's game ran, shot dead by Shatsca: only Szymon could harvest it). The
+    // game that runs a dead animal lists its carcass here (as a host's game lists its own); the others in that scene
+    // get the list, and their harvests go to that game with our own numbers (harvest_seq_), whose acks come back in
+    // its list and are turned into each player's own seq again.
+    struct PassedHarvest {
+        uint32_t ours = 0;      // the seq it went on with
+        uint8_t from = 0;       // who harvested
+        uint32_t theirs = 0;    // their seq
+        uint8_t to = 0;         // the game it went to
+    };
+    std::unordered_map<uint32_t, std::vector<PassedHarvest>> harvests_passed_;            // by animal
+    std::array<std::unordered_map<uint32_t, uint32_t>, net::kMaxPlayers> harvest_acks_;  // [player][animal]
+    uint32_t harvest_seq_ = 0;
+    std::array<size_t, net::kMaxPlayers> carcasses_passed_{};
     double last_arbiter_ = 0, last_controllers_ = 0;
     std::string controllers_sent_;
     double hours_ = -1;

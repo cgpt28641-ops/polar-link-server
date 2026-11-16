@@ -572,6 +572,29 @@ bool Wildlife::on_packet(const net::Packet& p, double now) {
             out_.except(p.from, w, true);
             return true;
         }
+        case net::Msg::Carcasses: {  // the carcasses of the animals a game runs: to the others in their scene
+            std::vector<net::CarcassRec> list;
+            if (!net::read_carcasses(r, list)) return true;
+            pass_carcasses(p.from, std::move(list), now);
+            return true;
+        }
+        case net::Msg::Harvest: {  // a harvest at someone's copy of a carcass: to the game that runs that animal
+            net::HarvestMsg h;
+            if (!net::read_harvest(r, h)) return true;
+            pass_harvest(p.from, h, now);
+            return true;
+        }
+        case net::Msg::Quartered: {
+            const uint32_t id = r.get<uint32_t>();
+            if (!r.ok()) return true;
+            const uint8_t to = owner(id);
+            if (to == net::kNoPlayer || to == p.from) return true;
+            net::Writer w(net::Msg::Quartered);
+            w.put(id);
+            out_.to(to, w, true);
+            logf("wildlife: player %u quartered #%u: passed on to player %u, who runs it", p.from, id, to);
+            return true;
+        }
         case net::Msg::FlareShot: {
             net::FlareShotMsg m;
             if (!net::read_flare_shot(r, m)) return true;
@@ -582,6 +605,79 @@ bool Wildlife::on_packet(const net::Packet& p, double now) {
         }
         default:
             return false;
+    }
+}
+
+void Wildlife::pass_harvest(uint8_t from, net::HarvestMsg h, double now) {
+    const uint8_t to = owner(h.animal);
+    if (to == net::kNoPlayer || to == from || from >= net::kMaxPlayers) {
+        logf("wildlife: player %u harvested #%u, which nobody runs now: not passed on", from, h.animal);
+        return;
+    }
+    if (harvest_seq_ == 0)  // (not 0, and not where the last run of the server began: the games keep the seqs they saw)
+        harvest_seq_ = static_cast<uint32_t>(static_cast<uint64_t>(now) & 0x7FFFFFFFu) | 1u;
+    PassedHarvest ph;
+    ph.ours = ++harvest_seq_;
+    if (ph.ours == 0) ph.ours = ++harvest_seq_;
+    ph.from = from;
+    ph.theirs = h.seq;
+    ph.to = to;
+    auto& passed = harvests_passed_[h.animal];
+    passed.push_back(ph);
+    if (passed.size() > 64) passed.erase(passed.begin());
+    h.seq = ph.ours;
+    net::Writer w(net::Msg::Harvest);
+    net::write_harvest(w, h);
+    out_.to(to, w, true);
+    logf("wildlife: player %u harvested #%u (%.2f kg meat, %d hide, %d gut): passed on to player %u, who runs it", from,
+         h.animal, h.meat_units / 1e9, h.hide, h.gut, to);
+}
+
+void Wildlife::pass_carcasses(uint8_t from, std::vector<net::CarcassRec> list, double now) {
+    std::string scene;
+    std::vector<net::CarcassRec> ours;
+    for (net::CarcassRec& c : list) {
+        const auto e = registry_.find(c.animal);
+        if (e == registry_.end() || e->second.owner != from) continue;  // (not the one that runs it: an old list)
+        if (scene.empty()) scene = e->second.scene;
+        if (e->second.scene != scene) continue;
+        // Its acks: our seqs it has counted -> each harvester's own
+        auto passed = harvests_passed_.find(c.animal);
+        if (passed != harvests_passed_.end()) {
+            auto& v = passed->second;
+            for (auto it = v.begin(); it != v.end();) {
+                const bool counted = it->to != from || (c.harvest_ack && static_cast<int32_t>(c.harvest_ack - it->ours) >= 0);
+                if (!counted) {
+                    ++it;
+                    continue;
+                }
+                harvest_acks_[it->from][c.animal] = it->theirs;
+                it = v.erase(it);
+            }
+            if (v.empty()) harvests_passed_.erase(passed);
+        }
+        ours.push_back(std::move(c));
+    }
+    if (ours.empty()) return;
+    const size_t per_packet = (net::kMaxPacket - 8) / net::kCarcassSize;
+    for (const Present& p : players_) {
+        if (p.id == from || p.id >= net::kMaxPlayers || p.scene != scene) continue;
+        std::vector<net::CarcassRec> theirs = ours;
+        for (net::CarcassRec& c : theirs) {
+            const auto ack = harvest_acks_[p.id].find(c.animal);
+            c.harvest_ack = ack == harvest_acks_[p.id].end() ? 0 : ack->second;
+        }
+        for (size_t at = 0; at < theirs.size(); at += per_packet) {
+            const std::vector<net::CarcassRec> part(theirs.begin() + static_cast<ptrdiff_t>(at),
+                                                    theirs.begin() + static_cast<ptrdiff_t>(std::min(theirs.size(), at + per_packet)));
+            net::Writer w(net::Msg::Carcasses);
+            net::write_carcasses(w, part);
+            if (w.ok()) out_.to(p.id, w, false);
+        }
+    }
+    if (from < net::kMaxPlayers && ours.size() != carcasses_passed_[from]) {
+        carcasses_passed_[from] = ours.size();
+        logf("wildlife: player %u's %zu carcass(es) in '%s' passed on to the others there", from, ours.size(), scene.c_str());
     }
 }
 
