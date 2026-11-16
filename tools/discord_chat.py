@@ -43,7 +43,7 @@ DEFAULTS = {
     'cooldown_s': 6,          # per person, between answers
     'temperature': 0.95,
     'max_tokens': 280,        # an answer's length (a few sentences)
-    'timeout_s': 120,         # the model's answer, at most
+    'timeout_s': 300,         # the model's answer, at most (the first after a start loads the model)
     'extra': '',              # more lines for the persona (inside jokes, nicknames...)
 }
 
@@ -157,7 +157,7 @@ def ask_model(conf, messages):
         'model': conf['model'],
         'messages': messages,
         'stream': False,
-        'keep_alive': '30m',
+        'keep_alive': -1,  # stays loaded (4.5 GB of the card's 6): no reload wait after a quiet hour
         'options': {'temperature': conf['temperature'], 'num_predict': conf['max_tokens'], 'num_ctx': 4096},
     }).encode('utf-8')
     req = urllib.request.Request(conf['ollama'].rstrip('/') + '/api/chat', data=body,
@@ -172,6 +172,38 @@ def ask_model(conf, messages):
     except (urllib.error.URLError, OSError, ValueError) as e:
         log('model: no answer from Ollama at %s (%s)' % (conf['ollama'], getattr(e, 'reason', e)))
     return None
+
+
+def warm_up(conf):
+    """Loads the model into the card at the start (an empty request), so the first mention doesn't wait for it, and
+    says in the log whether it runs on the graphics card or the processor (ollama /api/ps)."""
+    started = time.time()
+    body = json.dumps({'model': conf['model'], 'messages': [], 'keep_alive': -1}).encode('utf-8')
+    req = urllib.request.Request(conf['ollama'].rstrip('/') + '/api/chat', data=body,
+                                 headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=conf['timeout_s']) as r:
+            r.read()
+    except urllib.error.HTTPError as e:
+        log('model: Ollama refused to load %s (HTTP %d: %s); is it pulled? ollama pull %s' % (
+            conf['model'], e.code, e.read()[:200].decode('utf-8', 'replace'), conf['model']))
+        return
+    except (urllib.error.URLError, OSError) as e:
+        log('model: Ollama not reachable at %s (%s): is the Ollama app running?' % (conf['ollama'], getattr(e, 'reason', e)))
+        return
+    where = ''
+    try:
+        with urllib.request.urlopen(conf['ollama'].rstrip('/') + '/api/ps', timeout=10) as r:
+            for m in json.loads(r.read() or b'{}').get('models') or []:
+                size, vram = m.get('size') or 0, m.get('size_vram') or 0
+                if size:
+                    share = 100.0 * vram / size
+                    where = ('; on the graphics card' if share > 99 else
+                             '; %.0f%% on the graphics card, the rest on the processor (slow)' % share if share > 0 else
+                             '; on the PROCESSOR ONLY (slow: is the NVIDIA driver installed?)')
+    except (urllib.error.URLError, OSError, ValueError):
+        pass
+    log('model: loaded in %.0f s%s' % (time.time() - started, where))
 
 
 FALLBACKS = [
@@ -210,9 +242,14 @@ def main():
         author = message.author.display_name
         histories[message.channel.id].append((message.id, author, message.author == client.user, text[:600]))
 
+    warmed = [False]
+
     @client.event
     async def on_ready():
         log('logged in as %s; reading %s' % (client.user, ', '.join('#' + c for c in conf['channels'])))
+        if not warmed[0]:
+            warmed[0] = True
+            asyncio.get_running_loop().run_in_executor(None, warm_up, conf)
         for guild in client.guilds:
             for ch in guild.text_channels:
                 if ch.name.lower() not in conf['channels']:

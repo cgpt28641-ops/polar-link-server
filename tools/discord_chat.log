@@ -1,2 +1,6 @@
 [2026-11-13 21:59:55] model: no answer from Ollama at http://127.0.0.1:1 ([Errno 111] Connection refused)
 [2026-11-13 22:00:27] model: no answer from Ollama at http://127.0.0.1:11999 ([Errno 111] Connection refused)
+[2026-11-16 22:11:57] model: no answer from Ollama at http://127.0.0.1:11999 ([Errno 111] Connection refused)
+[2026-11-16 22:12:04] model: no answer from Ollama at http://127.0.0.1:11999 ([Errno 111] Connection refused)
+[2026-11-16 22:12:05] model: loaded in 0 s
+[2026-11-16 22:12:05] model: Ollama not reachable at http://127.0.0.1:1 ([Errno 111] Connection refused): is the Ollama app running?
