@@ -35,6 +35,8 @@ sam serwer.
   webhooka i wklej ten adres do pliku `discord_webhook.txt` obok serwera. Bot trzyma tam jedną wiadomość ze stanem
   (kto jest i gdzie, godzina w świecie) i pisze krótką linię, gdy ktoś wchodzi albo wychodzi. Adresu webhooka nie
   udostępniaj nikomu: każdy, kto go ma, może pisać na tym kanale.
+- Wyłączanie: `stop_server.bat` (leży obok). Serwer zapisuje świat i się zamyka, a bat sprząta bota Discorda i
+  launcher. Bez menedżera zadań. `start_server.bat` nie uruchomi drugiego serwera, gdy jeden już działa.
 - Żeby serwer startował razem z Windowsem: Win+R → `shell:startup` → wrzuć tam skrót do `start_server.bat`.
 - Gdy serwer zniknie bez `stop` (np. zabije go antywirus), bot uzna to za awarię i uruchomi go ponownie.
 

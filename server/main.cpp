@@ -7,7 +7,8 @@
 // The game version must be the players' exactly: given with --game-version, read from
 // DIR/tld_Data/StreamingAssets/version.txt with --game-dir, or from version.txt next to tldserver.exe (copy it there
 // from the game).
-// Console: players | kick <id> | say <text> | world | save | forget mode|features|clock | stop (also Ctrl+C, and
+// Console: players | kick <id> | say <text> | world | save | forget mode|features|clock | stop (also Ctrl+C, a
+// stop_server.flag file beside the exe (stop_server.bat), and
 // closing the window: the world is saved first). Everything is written to tldserver.log too.
 
 #include <atomic>
@@ -155,7 +156,20 @@ int main(int argc, char** argv) {
     std::thread(read_console).detach();
 
     bool quit = false;
+    // stop_server.bat (Karol 21.11: "no Task Manager every time") leaves this file: saved and stopped as by `stop`
+    const std::filesystem::path stop_flag = exe_dir / "stop_server.flag";
+    auto next_flag_check = std::chrono::steady_clock::now();
     while (!g_stop && !quit) {
+        if (std::chrono::steady_clock::now() >= next_flag_check) {
+            next_flag_check = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            std::error_code fe;
+            if (std::filesystem::exists(stop_flag, fe)) {
+                std::filesystem::remove(stop_flag, fe);
+                out("stop_server.flag found: saving the world and stopping");
+                quit = true;
+                break;
+            }
+        }
         server.update();
         std::vector<std::string> cmds;
         {

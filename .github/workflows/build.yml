@@ -77,7 +77,7 @@ jobs:
         run: |
           gh release view server-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create server-latest -R "$GITHUB_REPOSITORY" --prerelease --title "tldserver.exe (latest)" --notes "tldserver.exe"
-          gh release upload server-latest build/tldserver.exe tools/server_bot.py tools/discord_chat.py tools/start_server.bat tools/setup_discord.bat -R "$GITHUB_REPOSITORY" --clobber
+          gh release upload server-latest build/tldserver.exe tools/server_bot.py tools/discord_chat.py tools/start_server.bat tools/stop_server.bat tools/setup_discord.bat -R "$GITHUB_REPOSITORY" --clobber
           mod=$(git -C mod rev-parse --short=7 HEAD)
           gh release edit server-latest -R "$GITHUB_REPOSITORY" --notes "tldserver.exe, build ${GITHUB_SHA::7} (mod ${mod}, run ${GITHUB_RUN_ID})"
           echo "::notice::tldserver.exe is in the server-latest release"
