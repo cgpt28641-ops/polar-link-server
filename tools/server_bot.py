@@ -18,7 +18,8 @@ Auto update (Karol 21.11: "automatyczny update serwera"): every 10 min it asks G
 of cgpt28641-ops/polar-link-server; files there that differ from ours (tldserver.exe, the .py helpers, the .bat
 files) are downloaded beside us as <name>.new. When nobody is on the server it stops it as `stop` does (the world
 saved), puts the new files in place (the old ones kept as <name>.old), and starts it again. If the new tldserver.exe
-won't start, the old one comes back and that release isn't tried again. no_auto_update.txt beside us turns it off.
+won't start, the old one comes back and that release isn't tried again. OFF unless auto_update.txt is beside us
+(Karol 21.11: "nie chcę, żeby się aktualizował automatycznie"); then no request goes to GitHub at all.
 
 Standard library only (Python 3.8+). Nothing here prints the webhook's URL or the bot's token.
 """
@@ -49,6 +50,7 @@ UPDATE_API = 'https://api.github.com/repos/cgpt28641-ops/polar-link-server/relea
 UPDATE_FILES = ('tldserver.exe', 'server_bot.py', 'discord_chat.py', 'start_server.bat', 'stop_server.bat',
                 'setup_discord.bat')
 UPDATE_STATE = os.path.join(HERE, 'update_state.json')
+AUTO_UPDATE = os.path.join(HERE, 'auto_update.txt')  # (21.11: off unless this file is there)
 NO_UPDATE = os.path.join(HERE, 'no_auto_update.txt')
 STOP_FLAG = os.path.join(HERE, 'stop_server.flag')
 UPDATE_EVERY_S = 600    # GitHub asked this often (unauthenticated: 60 an hour allowed)
@@ -232,7 +234,7 @@ class Updater:
     """The release server-latest on GitHub, applied while nobody plays (see the top of this file)."""
 
     def __init__(self):
-        self.enabled = not os.path.isfile(NO_UPDATE)
+        self.enabled = os.path.isfile(AUTO_UPDATE) and not os.path.isfile(NO_UPDATE)
         self.state = load_json(UPDATE_STATE, {})  # {'ids': {name: asset id we have}, 'bad': [asset ids]}
         self.state.setdefault('ids', {})
         self.state.setdefault('bad', [])
@@ -245,7 +247,7 @@ class Updater:
         self.stop_asked = 0
         self.enabled_stop = True  # (off when this server doesn't stop on stop_server.flag)
         if not self.enabled:
-            log('update: no_auto_update.txt: no automatic updates')
+            log('update: off (auto_update.txt beside the bot turns it on): nothing asked of GitHub')
 
     def save(self):
         try:
