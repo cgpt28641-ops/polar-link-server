@@ -271,6 +271,26 @@ int main() {
         check(w.animals() + 1 == before && w.owner(300) == net::kNoPlayer, "a body their save already has is forgotten");
     }
 
+    // --- one carcass kept several times (Shatsca 21.11: 16 dead stags on 4 spots by the tracks)
+    {
+        Wildlife t(catcher(), [](const std::string&) {});
+        auto dead = [](uint32_t id, float x, float z) {
+            net::AnimalRec d = animal(id, x, z);
+            d.flags = net::kAnimalDead;
+            d.mode = net::wild::kModeDead;
+            d.hp = 0;
+            return d;
+        };
+        t.on_packet(frame(1, "Track", {dead(700, 10, 10), dead(701, 10.3f, 10.1f), dead(702, 10.1f, 9.8f), dead(703, 30, 30),
+                                     dead(704, 30.2f, 30)}), now);
+        t.tick({at(1, "Elsewhere", 0, 0)}, now + 1000, 10);  // owner left: all frozen
+        t.tick({at(1, "Elsewhere", 0, 0)}, now + 3000, 10);
+        const size_t merged = t.merge_dead_twins();
+        check(t.animals() == 2 && merged + 3 >= 3, "dead ones of a kind on one spot become one record per spot");
+        t.on_packet(frame(2, "Track", {dead(800, 30.1f, 30.1f)}), now + 5000);
+        check(t.animals() == 2, "a carcass a save put back where a frozen one lies replaces it");
+    }
+
     // --- deaths with nobody spawning there wait; the regions go from one spawning game to the next
     {
         net::WildCtlMsg k;

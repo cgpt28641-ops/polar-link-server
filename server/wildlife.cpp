@@ -1,5 +1,7 @@
 #include "server/wildlife.h"
 
+#include <algorithm>
+
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -9,6 +11,8 @@
 
 namespace srv {
 
+constexpr float kDeadTwinMetres = 0.6f;  // (21.11) two dead ones of a kind this close are one carcass
+constexpr double kDeadTwinCheckMs = 30000;
 constexpr float kTwinMetres = 150;  // a new animal this near a frozen one of its kind is that one (ingest)
 
 namespace {
@@ -331,6 +335,24 @@ std::vector<net::AnimalRec> Wildlife::ingest(uint8_t owner, const std::string& s
                     registry_.erase(twin);
                     it = registry_.find(rec.id);
                 }
+            } else {
+                // Shatsca 20./21.11 (16 dead stags by the tracks): a carcass TLD's save put back, shared as new, where a
+                // dead one of its kind lies frozen from before: the same body (the game's own stays)
+                std::vector<uint32_t> twins;
+                for (const auto& [id, f] : registry_) {
+                    if (id == rec.id || f.scene != scene || f.owner != net::kNoPlayer || f.pending_to != net::kNoPlayer) continue;
+                    if (f.last.kind != rec.kind || !(f.last.flags & net::kAnimalDead)) continue;
+                    const float dx = f.last.x - rec.x, dy = f.last.y - rec.y, dz = f.last.z - rec.z;
+                    if (dx * dx + dz * dz <= kDeadTwinMetres * kDeadTwinMetres && std::fabs(dy) < 1.0f) twins.push_back(id);
+                }
+                for (uint32_t twin : twins) {
+                    logf("wildlife: dead #%u kept frozen where the new dead #%u lies is that same carcass: forgotten", twin, rec.id);
+                    registry_.erase(twin);
+                }
+                if (!twins.empty()) {
+                    dirty_ = true;
+                    it = registry_.find(rec.id);
+                }
             }
         }
         Entry& e = it->second;
@@ -504,7 +526,40 @@ void Wildlife::arbitrate(const std::vector<Present>& players, double now) {
 void Wildlife::tick(const std::vector<Present>& players, double now_ms, double hours) {
     hours_ = hours;
     players_ = players;
+    if (now_ms - last_dead_twins_ >= kDeadTwinCheckMs) {
+        last_dead_twins_ = now_ms;
+        merge_dead_twins();
+    }
     arbitrate(players, now_ms);
+}
+
+// Shatsca 20./21.11: frozen dead ones of a kind lying on one spot (within kDeadTwinMetres) are one carcass kept several
+// times (each visit TLD's save put the body back under a new id): one stays (the oldest record), the rest go.
+size_t Wildlife::merge_dead_twins() {
+    std::vector<const Entry*> dead;
+    for (const auto& [id, e] : registry_)
+        if (e.owner == net::kNoPlayer && e.pending_to == net::kNoPlayer && (e.last.flags & net::kAnimalDead)) dead.push_back(&e);
+    std::sort(dead.begin(), dead.end(), [](const Entry* a, const Entry* b) { return a->id < b->id; });
+    std::vector<uint32_t> drop;
+    std::vector<bool> gone(dead.size(), false);
+    for (size_t i = 0; i < dead.size(); ++i) {
+        if (gone[i]) continue;
+        for (size_t j = i + 1; j < dead.size(); ++j) {
+            if (gone[j] || dead[j]->scene != dead[i]->scene || dead[j]->last.kind != dead[i]->last.kind) continue;
+            const float dx = dead[j]->last.x - dead[i]->last.x, dy = dead[j]->last.y - dead[i]->last.y,
+                        dz = dead[j]->last.z - dead[i]->last.z;
+            if (dx * dx + dz * dz > kDeadTwinMetres * kDeadTwinMetres || std::fabs(dy) >= 1.0f) continue;
+            gone[j] = true;
+            drop.push_back(dead[j]->id);
+        }
+    }
+    for (uint32_t id : drop) registry_.erase(id);
+    if (!drop.empty()) {
+        dirty_ = true;
+        logf("wildlife: %zu dead record(s) lying on the same spot as another of their kind forgotten (one carcass kept "
+             "several times)", drop.size());
+    }
+    return drop.size();
 }
 
 bool Wildlife::on_packet(const net::Packet& p, double now) {

@@ -108,6 +108,9 @@ private:
     void transfer(Entry& e, uint8_t to, const char* why, const std::vector<Present>& players, double now);
     void take(net::WildCtlMsg t, uint8_t from, double now);
     void refuse(uint32_t id, uint16_t epoch, uint8_t from, double now, uint8_t flags = 0);
+public:
+    size_t merge_dead_twins();  // (also run every 30 s by tick)
+private:
     std::vector<net::AnimalRec> ingest(uint8_t owner, const std::string& scene, const std::vector<net::AnimalRec>& recs, double now);
     void arbitrate(const std::vector<Present>& players, double now);
     void pass_carcasses(uint8_t from, std::vector<net::CarcassRec> list, double now);
@@ -141,6 +144,7 @@ private:
     uint32_t harvest_seq_ = 0;
     std::array<size_t, net::kMaxPlayers> carcasses_passed_{};
     double last_arbiter_ = 0, last_controllers_ = 0;
+    double last_dead_twins_ = -1e18;
     std::string controllers_sent_;
     double hours_ = -1;
     bool dirty_ = false;
