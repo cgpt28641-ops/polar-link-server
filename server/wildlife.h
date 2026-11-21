@@ -107,7 +107,7 @@ private:
     void age_frozen(Entry& e, net::WildCtlMsg& t);
     void transfer(Entry& e, uint8_t to, const char* why, const std::vector<Present>& players, double now);
     void take(net::WildCtlMsg t, uint8_t from, double now);
-    void refuse(uint32_t id, uint16_t epoch, uint8_t from, double now);
+    void refuse(uint32_t id, uint16_t epoch, uint8_t from, double now, uint8_t flags = 0);
     std::vector<net::AnimalRec> ingest(uint8_t owner, const std::string& scene, const std::vector<net::AnimalRec>& recs, double now);
     void arbitrate(const std::vector<Present>& players, double now);
     void pass_carcasses(uint8_t from, std::vector<net::CarcassRec> list, double now);

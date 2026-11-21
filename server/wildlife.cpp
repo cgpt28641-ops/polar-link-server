@@ -279,11 +279,19 @@ void Wildlife::take(net::WildCtlMsg t, uint8_t from, double now) {
     deliver_take(t);
 }
 
-void Wildlife::refuse(uint32_t id, uint16_t epoch, uint8_t from, double now) {
+void Wildlife::refuse(uint32_t id, uint16_t epoch, uint8_t from, double now, uint8_t flags) {
     const auto it = registry_.find(id);
     if (it == registry_.end()) return;
     Entry& e = it->second;
     if (e.owner != from || e.epoch != epoch) return;
+    if ((flags & net::kRefuseDuplicate) && (e.last.flags & net::kAnimalDead)) {
+        // Shatsca 20.11: a dead body kept from before whose carcass the player's save already put back (their game
+        // shares it under a new id): offered again every minute, forever (16 dead stags by the tracks). Forgotten.
+        logf("wildlife: %s already has #%u's carcass (from its save): the old record forgotten", who(from).c_str(), id);
+        registry_.erase(it);
+        dirty_ = true;
+        return;
+    }
     logf("wildlife: %s couldn't take #%u; someone else will (not them for a minute)", who(from).c_str(), id);
     if (from < net::kMaxPlayers) e.blocked_until[from] = now + kBlockMs;
     e.owner = net::kNoPlayer;
@@ -519,7 +527,7 @@ bool Wildlife::on_packet(const net::Packet& p, double now) {
             if (!net::read_wild_ctl(r, m)) return true;
             switch (m.op) {
                 case net::WildOp::Take: take(std::move(m), p.from, now); break;
-                case net::WildOp::Refuse: refuse(m.id, m.epoch, p.from, now); break;
+                case net::WildOp::Refuse: refuse(m.id, m.epoch, p.from, now, m.flags); break;
                 case net::WildOp::Gone: gone(m.id, p.from, now); break;
                 case net::WildOp::Kill: tell_controller_kill(m); break;  // a death in a player's game
                 case net::WildOp::Regions: store_regions(std::move(m), p.from); break;

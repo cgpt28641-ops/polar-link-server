@@ -245,6 +245,30 @@ int main() {
         for (const auto& m : t)
             got |= m.id == 300 && (m.flags & net::kTakeDead) && (m.flags & net::kTakeBody) && m.text == "half the meat left";
         check(got, "a carcass whose owner left goes to a player near it, as harvested");
+        // Shatsca 20.11: that player's save already put the same carcass back: it says so, and the record goes
+        const size_t before = w.animals();
+        uint16_t epoch = 0;
+        for (const auto& m : t)
+            if (m.id == 300) epoch = m.epoch;
+        net::WildCtlMsg plain;
+        plain.op = net::WildOp::Refuse;
+        plain.id = 300;
+        plain.epoch = epoch;
+        net::WildCtlMsg dup = plain;
+        dup.flags = net::kRefuseDuplicate;
+        {
+            net::Writer wr(net::Msg::WildCtl, net::kMaxMessage);
+            net::write_wild_ctl(wr, dup);
+            net::Reader rd(wr.data() + net::kHeaderSize, wr.size() - net::kHeaderSize);
+            net::WildCtlMsg back;
+            check(net::read_wild_ctl(rd, back) && back.flags == net::kRefuseDuplicate && back.id == 300,
+                  "a refusal's flags go over the wire");
+            net::Writer wp(net::Msg::WildCtl, net::kMaxMessage);
+            net::write_wild_ctl(wp, plain);
+            check(wp.size() + 1 == wr.size(), "a plain refusal is as it was (older readers)");
+        }
+        w.on_packet(ctl_packet(2, dup), now);
+        check(w.animals() + 1 == before && w.owner(300) == net::kNoPlayer, "a body their save already has is forgotten");
     }
 
     // --- deaths with nobody spawning there wait; the regions go from one spawning game to the next
@@ -308,7 +332,7 @@ int main() {
         size_t bad = 0;
         for (const auto& [regions, msg] : file)
             if (!again.load(regions, msg)) ++bad;
-        check(bad == 0 && again.animals() == w.animals() && again.region_scenes() == w.region_scenes() && again.animals() >= 3,
+        check(bad == 0 && again.animals() == w.animals() && again.region_scenes() == w.region_scenes() && again.animals() >= 2,
               "the registry and the spawn regions survive the world file");
         check(again.owner(100) == net::kNoPlayer, "after a restart nobody runs anything until someone comes near");
     }
