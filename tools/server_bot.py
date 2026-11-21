@@ -14,10 +14,17 @@ It also starts, when discord_bot_token.txt is beside it, the chat bot (discord_c
 language model) and the Discord bridge (tldcoop-discord\\local\\run_bridge.py, when that repository is cloned beside
 it), and starts them again if they end.
 
+Auto update (Karol 21.11: "automatyczny update serwera"): every 10 min it asks GitHub for the release server-latest
+of cgpt28641-ops/polar-link-server; files there that differ from ours (tldserver.exe, the .py helpers, the .bat
+files) are downloaded beside us as <name>.new. When nobody is on the server it stops it as `stop` does (the world
+saved), puts the new files in place (the old ones kept as <name>.old), and starts it again. If the new tldserver.exe
+won't start, the old one comes back and that release isn't tried again. no_auto_update.txt beside us turns it off.
+
 Standard library only (Python 3.8+). Nothing here prints the webhook's URL or the bot's token.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -37,6 +44,14 @@ CHAT_LOG = os.path.join(HERE, 'discord_chat.log')
 # Claude chats, here instead of on GitHub Actions.
 BRIDGE = os.path.join(HERE, 'tldcoop-discord', 'local', 'run_bridge.py')
 BRIDGE_LOG = os.path.join(HERE, 'discord_bridge.log')
+
+UPDATE_API = 'https://api.github.com/repos/cgpt28641-ops/polar-link-server/releases/tags/server-latest'
+UPDATE_FILES = ('tldserver.exe', 'server_bot.py', 'discord_chat.py', 'start_server.bat', 'stop_server.bat',
+                'setup_discord.bat')
+UPDATE_STATE = os.path.join(HERE, 'update_state.json')
+NO_UPDATE = os.path.join(HERE, 'no_auto_update.txt')
+STOP_FLAG = os.path.join(HERE, 'stop_server.flag')
+UPDATE_EVERY_S = 600    # GitHub asked this often (unauthenticated: 60 an hour allowed)
 
 EDIT_EVERY_S = 60       # the status message at least this often (and at once when the players change)
 QUICK_FAIL_S = 30       # a server that ends sooner than this after its start didn't really run
@@ -213,6 +228,156 @@ class Helpers:
             h.stop()
 
 
+class Updater:
+    """The release server-latest on GitHub, applied while nobody plays (see the top of this file)."""
+
+    def __init__(self):
+        self.enabled = not os.path.isfile(NO_UPDATE)
+        self.state = load_json(UPDATE_STATE, {})  # {'ids': {name: asset id we have}, 'bad': [asset ids]}
+        self.state.setdefault('ids', {})
+        self.state.setdefault('bad', [])
+        self.next_check = time.time() + 30
+        self.staged = {}       # name -> (asset id, path of the downloaded .new)
+        self.build = ''        # the release's build, as its notes say
+        self.waiting_told = False
+        self.stopping = False  # we asked the server to stop for an update
+        self.exe_swapped_at = 0
+        self.stop_asked = 0
+        self.enabled_stop = True  # (off when this server doesn't stop on stop_server.flag)
+        if not self.enabled:
+            log('update: no_auto_update.txt: no automatic updates')
+
+    def save(self):
+        try:
+            save_json(UPDATE_STATE, self.state)
+        except OSError:
+            pass
+
+    def check(self):
+        """Every UPDATE_EVERY_S: what the release has that we don't (downloaded as .new)."""
+        if not self.enabled or time.time() < self.next_check:
+            return
+        self.next_check = time.time() + UPDATE_EVERY_S
+        try:
+            req = urllib.request.Request(UPDATE_API, headers={'User-Agent': 'tldserver-bot (1.0)',
+                                                             'Accept': 'application/vnd.github+json'})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                rel = json.loads(r.read())
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            log('update: GitHub not reached (%s)' % getattr(e, 'reason', e))
+            return
+        body = rel.get('body') or ''
+        m = re.search(r'build ([0-9a-f]{7})', body)
+        self.build = m.group(1) if m else ''
+        for a in rel.get('assets') or []:
+            name, aid, size, url = a.get('name'), a.get('id'), a.get('size', 0), a.get('browser_download_url')
+            if name not in UPDATE_FILES or not url or aid in self.state['bad']:
+                continue
+            if self.state['ids'].get(name) == aid or (name in self.staged and self.staged[name][0] == aid):
+                continue
+            new = os.path.join(HERE, name + '.new')
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'tldserver-bot (1.0)'})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    data = r.read()
+            except (urllib.error.URLError, OSError) as e:
+                log('update: %s not downloaded (%s)' % (name, getattr(e, 'reason', e)))
+                continue
+            if len(data) != size or (name.endswith('.exe') and not data.startswith(b'MZ')):
+                log('update: %s came broken (%d of %d bytes): not used' % (name, len(data), size))
+                continue
+            try:
+                with open(os.path.join(HERE, name), 'rb') as f:
+                    same = f.read() == data
+            except OSError:
+                same = False
+            if same:
+                self.state['ids'][name] = aid
+                self.save()
+                continue
+            with open(new, 'wb') as f:
+                f.write(data)
+            self.staged[name] = (aid, new)
+            log('update: a new %s is ready (build %s)' % (name, self.build or '?'))
+            self.waiting_told = False
+
+    def maybe_stop(self, proc):
+        """Something new and nobody on the server: stop it as `stop` does (it saves the world first)."""
+        if self.stopping and proc.poll() is None and time.time() - self.stop_asked > 120:
+            # (a tldserver.exe from before stop_server.flag: it never stops by itself; the update waits for a stop by
+            # hand and goes in then)
+            log('update: the server did not stop for the update within 2 min; it goes in at the next stop')
+            self.stopping = False
+            self.enabled_stop = False
+            try:
+                os.remove(STOP_FLAG)
+            except OSError:
+                pass
+            return
+        if not self.staged or self.stopping or not self.enabled_stop or proc.poll() is not None:
+            return
+        st = load_json(STATUS, None) or {}
+        if st.get('players'):
+            if not self.waiting_told:
+                log('update: ready (%s); waiting until nobody is on the server' % ', '.join(sorted(self.staged)))
+                self.waiting_told = True
+            return
+        log('update: nobody on the server: stopping it for the update')
+        try:
+            with open(STOP_FLAG, 'w') as f:
+                f.write('update\n')
+            self.stopping = True
+            self.stop_asked = time.time()
+        except OSError as e:
+            log('update: stop_server.flag not written (%s)' % e)
+
+    def apply(self):
+        """The server is stopped: the new files in place (the old kept as .old). Returns the names put in."""
+        done = []
+        for name, (aid, new) in list(self.staged.items()):
+            path = os.path.join(HERE, name)
+            try:
+                if os.path.isfile(path):
+                    os.replace(path, path + '.old')
+                os.replace(new, path)
+            except OSError as e:
+                log('update: %s not put in place (%s); tried again next time' % (name, e))
+                continue
+            self.state['ids'][name] = aid
+            del self.staged[name]
+            done.append(name)
+            if name == 'tldserver.exe':
+                self.exe_swapped_at = time.time()
+        self.stopping = False
+        try:
+            os.remove(STOP_FLAG)
+        except OSError:
+            pass
+        if done:
+            self.save()
+            log('update: in place: %s (build %s)' % (', '.join(done), self.build or '?'))
+        return done
+
+    def roll_back(self):
+        """The new tldserver.exe won't start: the old one back, that release not tried again."""
+        path = EXE
+        if not self.exe_swapped_at or not os.path.isfile(path + '.old'):
+            return False
+        try:
+            bad = self.state['ids'].get('tldserver.exe')
+            os.replace(path + '.old', path)
+        except OSError as e:
+            log('update: the old tldserver.exe could not be put back (%s)' % e)
+            return False
+        if bad is not None:
+            self.state['bad'].append(bad)
+            self.state['ids'].pop('tldserver.exe', None)
+            self.save()
+        self.exe_swapped_at = 0
+        log('update: the new tldserver.exe would not start: the old one is back (that release is skipped)')
+        return True
+
+
 def stopped_on_purpose(since):
     """The server writes status.json with online false as it stops (stop, Ctrl+C, the window closed). Killed from
     outside (an antivirus, the task manager) it can't, and its exit code may still read 0."""
@@ -236,13 +401,15 @@ def status_text(st, online):
     return '\n'.join(lines)
 
 
-def watch(proc, discord, chat):
+def watch(proc, discord, chat, updater):
     """While the server runs: the status message and join / leave lines. Returns its exit code."""
     known = None
     last_edit = 0
     last_mtime = 0
     while True:
         chat.tick()
+        updater.check()
+        updater.maybe_stop(proc)
         code = proc.poll()
         if code is not None:
             return code
@@ -278,13 +445,19 @@ def main():
         return 1
     discord = Discord()
     chat = Helpers([ChatBot(), ChatBot('discord bridge', BRIDGE, BRIDGE_LOG)])
+    updater = Updater()
     try:
-        return run(discord, chat)
+        code = run(discord, chat, updater)
     finally:
         chat.stop()
+    if code == 'restart':
+        # server_bot.py itself was updated: the new one runs on in this window
+        log('update: starting the new server_bot.py')
+        return subprocess.call([sys.executable, os.path.abspath(__file__)] + sys.argv[1:], cwd=HERE)
+    return code
 
 
-def run(discord, chat):
+def run(discord, chat, updater):
     quick_fails = 0
     first = True
     while True:
@@ -295,7 +468,7 @@ def run(discord, chat):
             discord.post('🟢 Serwer wystartował')
         first = False
         try:
-            code = watch(proc, discord, chat)
+            code = watch(proc, discord, chat, updater)
         except KeyboardInterrupt:  # (Ctrl+C reaches the server too: it saves and stops)
             code = proc.wait()
         ran = time.time() - started
@@ -303,12 +476,31 @@ def run(discord, chat):
         if code == 0 and not stopped_on_purpose(started):
             log('tldserver.exe vanished without stopping (killed from outside? an antivirus?): treated as a crash')
             code = -1
+        if code == 0 and updater.stopping:
+            done = updater.apply()
+            if done:
+                discord.post('🔄 Serwer zaktualizowany (build %s): uruchamiam go ponownie' % (updater.build or '?'))
+            if 'server_bot.py' in done:
+                return 'restart'
+            if 'discord_chat.py' in done:
+                chat.stop()  # (started again, new, at the next tick)
+            first = False
+            quick_fails = 0
+            time.sleep(RESTART_WAIT_S)
+            continue
         if code == 0:
+            if updater.staged:
+                updater.apply()  # (stopped by hand with something new waiting: in place for the next start)
             log('tldserver.exe stopped (exit 0): not started again')
             discord.post('🔴 Serwer wyłączony')
             return 0
         if ran < QUICK_FAIL_S:
             quick_fails += 1
+            if quick_fails >= 2 and updater.exe_swapped_at and updater.roll_back():
+                discord.post('⚠️ Nowa wersja serwera nie startuje: wracam do poprzedniej')
+                quick_fails = 0
+                time.sleep(RESTART_WAIT_S)
+                continue
             if quick_fails >= MAX_QUICK_FAILS:
                 log('tldserver.exe ended %d times right after starting (exit %d): given up; see tldserver.log' % (quick_fails, code))
                 discord.post('⚠️ Serwer nie może wystartować (szczegóły w tldserver.log na serwerze)')

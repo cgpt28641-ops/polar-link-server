@@ -35,6 +35,11 @@ sam serwer.
   webhooka i wklej ten adres do pliku `discord_webhook.txt` obok serwera. Bot trzyma tam jedną wiadomość ze stanem
   (kto jest i gdzie, godzina w świecie) i pisze krótką linię, gdy ktoś wchodzi albo wychodzi. Adresu webhooka nie
   udostępniaj nikomu: każdy, kto go ma, może pisać na tym kanale.
+- **Automatyczna aktualizacja**: `server_bot.py` co 10 min sprawdza wydanie server-latest na GitHubie. Nowe pliki
+  (tldserver.exe, skrypty .py, .bat) pobiera obok jako `*.new`. Gdy nikt nie gra, zatrzymuje serwer (z zapisem
+  świata), podmienia pliki (stare zostają jako `*.old`) i uruchamia go znowu; na Discordzie: „🔄 Serwer
+  zaktualizowany”. Jeśli nowy tldserver.exe nie wstaje, wraca stary. Wyłączenie: pusty plik `no_auto_update.txt`
+  obok. Log: `server_bot.log` (linie „update:”).
 - Wyłączanie: `stop_server.bat` (leży obok). Serwer zapisuje świat i się zamyka, a bat sprząta bota Discorda i
   launcher. Bez menedżera zadań. `start_server.bat` nie uruchomi drugiego serwera, gdy jeden już działa.
 - Żeby serwer startował razem z Windowsem: Win+R → `shell:startup` → wrzuć tam skrót do `start_server.bat`.
